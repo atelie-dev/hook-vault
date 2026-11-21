@@ -3,6 +3,11 @@
 An encrypted webhook inbox in Go. Read `README.md` first: it carries the threat
 model, and the threat model is the product.
 
+**Project intelligence** — what to read in which order, the three contracts, and
+the traps that already cost time:
+`.opencode/context/project-intelligence/navigation.md` (start there, then
+`technical-domain.md`).
+
 ## Build and test
 
 ```bash
