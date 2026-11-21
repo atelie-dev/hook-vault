@@ -526,6 +526,24 @@ func (s *Store) Watermark(ctx context.Context, endpointID string) (*string, erro
 	return oldest, nil
 }
 
+// Newest returns the newest id the read API would serve, so a new consumer can
+// attach at the tail instead of replaying history it cannot decrypt. nil when
+// the endpoint is empty, or when every stored event is still inside the read
+// lag.
+func (s *Store) Newest(ctx context.Context, endpointID string, lag time.Duration) (*string, error) {
+	var newest *string
+	err := s.pool.QueryRow(ctx, `
+		select (select id::text from event
+		         where endpoint_id = $1::uuid
+		           and received_at < now() - make_interval(secs => $2)
+		         order by id desc
+		         limit 1)`, endpointID, lag.Seconds()).Scan(&newest)
+	if err != nil {
+		return nil, fmt.Errorf("newest: %w", err)
+	}
+	return newest, nil
+}
+
 // Stats returns hourly buckets for the last window, oldest first.
 func (s *Store) Stats(ctx context.Context, endpointID string, window time.Duration) ([]Bucket, error) {
 	rows, err := s.pool.Query(ctx, `

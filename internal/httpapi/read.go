@@ -127,6 +127,12 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", "internal error")
 		return
 	}
+	newest, err := s.store.Newest(r.Context(), endpoint.ID, s.readLag)
+	if err != nil {
+		s.logger.Error("newest", "endpoint", endpoint.ID, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"endpoint": map[string]any{
@@ -143,7 +149,10 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 			"max_bytes":      endpoint.MaxBytes,
 		},
 		"cursor": map[string]any{
-			"oldest":      oldest,
+			"oldest": oldest,
+			// Pass this as ?cursor= to attach at the tail: a consumer joining an
+			// existing endpoint cannot decrypt what was sealed for another key.
+			"newest":      newest,
 			"lag_seconds": s.readLag.Seconds(),
 		},
 		"ingest_url": s.ingestURL(endpoint.Slug),

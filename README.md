@@ -42,15 +42,35 @@ read token leaks ciphertext.
 
 ## Quick start
 
+Four recipes, each self-contained: start the service, register an endpoint, give
+a second consumer access, and rotate a key.
+
+### Start the service
+
 ```bash
+# Go 1.26+ to build from source (dictated by the dependencies, not by the code).
 # PostgreSQL 18+ is required: the cursor is the native uuidv7().
-export HOOKVAULT_TEST_DATABASE_URL='host=/tmp port=5432 user=postgres dbname=hookvault'
 go build -o bin/hook-vault ./cmd/hook-vault
 
-bin/hook-vault keygen
-bin/hook-vault serve --database-url "$HOOKVAULT_TEST_DATABASE_URL" \
-  --ingest-addr :8080 --admin-addr 127.0.0.1:8081 \
+bin/hook-vault serve \
+  --database-url 'postgres://hookvault@localhost/hookvault?sslmode=disable' \
+  --ingest-addr :8080 \
+  --admin-addr 127.0.0.1:8081 \
   --public-url https://hooks.example.com
+```
+
+Every flag has a `HOOKVAULT_*` environment variable; the database URL is the only
+one without a default. `serve` migrates on startup, so the database only has to
+exist and be empty, then runs both listeners and the retention sweeper.
+`--public-url` is used only to render `ingest_url` in responses.
+
+### Register an endpoint
+
+An endpoint is one provider pointed at one inbox. Each endpoint gets its own key
+pair, so `keygen` runs **once per endpoint** — not once per installation:
+
+```bash
+bin/hook-vault keygen
 ```
 
 `keygen` prints five things:
@@ -63,24 +83,22 @@ token:        the read API bearer token, derived from the secret (HKDF)
 token_sha256: what the server stores; register this, never the token
 ```
 
-**Run it once per endpoint, not once per installation.** The token is what
-identifies the endpoint — presenting it is how the server knows which archive to
-read — so each endpoint gets its own key pair, its own `kid` and its own token.
-Two consequences worth knowing before you plan:
+The token is what identifies the endpoint — presenting it is how the server knows
+which archive to read — so the two are bound to each other:
 
 - **A key pair belongs to exactly one endpoint.** Registering the same
   `token_sha256` on a second endpoint is refused with `409 token_in_use`, which
   bounds the blast radius of a leaked token to a single endpoint's history.
-- **One endpoint can have several key pairs.** Run `keygen` again and register
-  the new public key to give a second consumer access, or to rotate: the old key
-  keeps opening the events it sealed, which are tagged with its `kid`.
+- **One endpoint can have several key pairs.** That is how a second consumer
+  joins and how a key is rotated — the old key keeps opening the events it
+  sealed, which are tagged with its `kid`.
 
-So three endpoints read by one service means three secrets inside that service,
-and rotation is per endpoint. `keygen --secret <secret>` is not a new key — it
-reprints the values for a secret you already have, which is how you recover
-`token` and `token_sha256` after a restore.
+Three endpoints read by one service means three secrets inside that service.
+`keygen --secret <secret>` is not a new key: it reprints the values for a secret
+you already have, which is how you recover `token` and `token_sha256` after a
+restore.
 
-Then create an endpoint through the control plane:
+Then create it:
 
 ```bash
 curl -X POST http://127.0.0.1:8081/v1/endpoints -H 'content-type: application/json' -d '{
@@ -134,12 +152,65 @@ returns, so a consumer never has to remember it.
 
 `verify_secret` is write-only: it never comes back in any response.
 
-GitHub now posts to `https://hooks.example.com/in/<slug>`. Read it back:
+Point the provider at `ingest_url` and read it back:
 
 ```bash
 curl "https://hooks.example.com/v1/events?limit=100" \
   -H "authorization: Bearer hv1_…" | jq -r '.events[0].ct' | bin/hook-vault open
 ```
+
+### Add a second consumer
+
+Another reader on the same endpoint. `keygen` again, register the **new** public
+key on the **same** endpoint, and revoke nothing:
+
+```bash
+curl -X POST http://127.0.0.1:8081/v1/endpoints/<endpoint id>/keys \
+  -H 'content-type: application/json' -d '{
+  "public_key": "<public_key from the second keygen>",
+  "token_sha256": "<token_sha256 from the second keygen>"
+}'
+```
+
+The new consumer starts at the **tail**, not at the beginning: everything already
+stored was sealed for somebody else's key and it could not decrypt any of it.
+
+```bash
+curl http://127.0.0.1:8081/v1/me -H "authorization: Bearer <new token>" \
+  | jq -r '.cursor.newest'    # pass this as ?cursor= on the first read
+```
+
+Both consumers keep working, indefinitely. That is the whole difference from a
+rotation: no `DELETE`.
+
+### Rotate a key
+
+The same registration plus a revoke, and the order is what matters:
+
+1. `keygen` for the new key and register it on the same endpoint, exactly as
+   above. New events are now sealed for the new key.
+2. **Let the old consumer drain first.** Events already stored are sealed to the
+   old key: the new consumer can download them but never open them. Anything the
+   old consumer has not read before its key is revoked is effectively lost.
+3. Revoke the old key:
+
+   ```bash
+   curl -X DELETE http://127.0.0.1:8081/v1/endpoints/<endpoint id>/keys/<old kid>
+   ```
+
+4. Keep the old `secret_key` for as long as retention holds events tagged with
+   its `kid`. It is the only thing that still opens them.
+
+| | Add a consumer | Rotate |
+|---|---|---|
+| `POST /v1/endpoints/{id}/keys` | yes | yes |
+| `DELETE /v1/endpoints/{id}/keys/{kid}` | no | yes, after draining |
+| old token | keeps working | dies on the next request |
+| old secret | still needed for its own events | still needed for its `kid` |
+
+An endpoint carrying several keys is what makes rotation safe: an event records
+the `kid` that sealed it, so revoking a key stops it from authenticating new
+reads without orphaning a byte of history.
 
 ## Two listeners
 
@@ -232,7 +303,7 @@ before decoding; Node, Go and PHP do not.
 | `POST` | `/in/{slug}` | the provider endpoint; `X-HookVault-Event-Id` in the response |
 | `GET` | `/in/{slug}?hub.mode=subscribe&hub.verify_token=…&hub.challenge=…` | Meta subscription handshake, echoes the challenge |
 | `GET` | `/v1/events?cursor=&limit=&include_rejected=` | bearer token; `limit` ≤ 1000, default 100 |
-| `GET` | `/v1/me` | key id, storage counters, oldest available cursor |
+| `GET` | `/v1/me` | key id, storage counters, both ends of the log (`cursor.oldest`, `cursor.newest`) |
 
 `GET /v1/events` returns:
 
@@ -278,6 +349,11 @@ Three details make it correct rather than merely convenient:
 3. **`oldest_cursor` is always returned.** When retention deletes history, a
    consumer whose cursor is older than that has a gap and can say so instead of
    silently believing it is up to date.
+
+A consumer joining an existing endpoint should not start at `oldest_cursor`:
+those events are sealed for a key it does not hold. `GET /v1/me` returns
+`cursor.newest` for exactly this, so a new reader attaches at the tail with one
+request instead of replaying history it cannot read.
 
 ### Control plane
 

@@ -347,6 +347,30 @@ func TestCursorPaginationWalksEveryEventOnce(t *testing.T) {
 	if resume.Events[0].ID != seen[3] {
 		t.Fatalf("resume started at %q, want %q", resume.Events[0].ID, seen[3])
 	}
+
+	// /v1/me exposes both ends of the log. A consumer joining an existing
+	// endpoint starts at cursor.newest: everything before it was sealed for
+	// another key and it could not decrypt it anyway.
+	status, body, _ = do(t, http.MethodGet, dataPlane.URL+"/v1/me", nil,
+		map[string]string{"Authorization": "Bearer " + key.Token})
+	if status != http.StatusOK {
+		t.Fatalf("me: status %d, body %s", status, body)
+	}
+	var me struct {
+		Cursor struct {
+			Oldest *string `json:"oldest"`
+			Newest *string `json:"newest"`
+		} `json:"cursor"`
+	}
+	if err := json.Unmarshal(body, &me); err != nil {
+		t.Fatalf("decode me: %v", err)
+	}
+	if me.Cursor.Newest == nil || *me.Cursor.Newest != seen[total-1] {
+		t.Fatalf("cursor.newest = %v, want %q", me.Cursor.Newest, seen[total-1])
+	}
+	if me.Cursor.Oldest == nil || *me.Cursor.Oldest != seen[0] {
+		t.Fatalf("cursor.oldest = %v, want %q", me.Cursor.Oldest, seen[0])
+	}
 }
 
 func TestInvalidSignatureIsStoredAsEvidence(t *testing.T) {
