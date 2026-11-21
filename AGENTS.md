@@ -13,6 +13,7 @@ the traps that already cost time:
 ```bash
 CGO_ENABLED=0 go build ./...        # always CGO off: static binary, no libsodium
 go vet ./...
+golangci-lint run ./...              # the lint gate (.golangci.yml), must stay at 0 issues
 go test ./...                        # unit tests, no database
 HOOKVAULT_TEST_DATABASE_URL='host=/tmp port=5432 user=postgres dbname=hookvault_test' go test ./...
 ```

@@ -1,4 +1,4 @@
-<!-- Context: project-intelligence/technical | Priority: critical | Version: 1.1 | Updated: 2026-11-21 -->
+<!-- Context: project-intelligence/technical | Priority: critical | Version: 1.2 | Updated: 2026-11-21 -->
 
 # Technical Domain — hook-vault
 
@@ -134,7 +134,7 @@ HOOKVAULT_TEST_DATABASE_URL='host=/tmp port=5432 user=postgres dbname=hookvault'
 Ephemeral server: `nix shell nixpkgs#postgresql_18 -c sh -c 'initdb -D /tmp/hv-pg -U postgres --auth=trust --locale=C && pg_ctl -D /tmp/hv-pg -l /tmp/hv-pg.log -o "-p 55432 -k /tmp" start && createdb -h /tmp -p 55432 -U postgres hookvault'`
 
 Unit + integration are thorough (crypto vector, cursor walk, retention, session,
-profiles, `since`, watch). **No JS test exists** — panel JS is exercised by hand.
+profiles, `since`, watch). Go has a lint gate (`golangci-lint run ./...`); JS has none.
 
 ## Build & release
 
