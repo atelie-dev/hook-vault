@@ -409,3 +409,86 @@ func TestWatchLoopAdvancesCursorWithoutFile(t *testing.T) {
 		t.Fatalf("event emitted %d times, want 1:\n%s", len(lines), out.String())
 	}
 }
+
+func TestPickCredential(t *testing.T) {
+	cases := []struct {
+		name                   string
+		flagValue, flagPath    string
+		envValueName, envValue string
+		envPathName, envPath   string
+		wantValue, wantPath    string
+		errSub                 string
+	}{
+		{name: "flag value", flagValue: "v", wantValue: "v"},
+		{name: "flag path", flagPath: "/k", wantPath: "/k"},
+		{name: "both flags", flagValue: "v", flagPath: "/k", errSub: "not both"},
+		{name: "env value", envValueName: "HOOKVAULT_KEY_VALUE", envValue: "v", wantValue: "v"},
+		{name: "env path", envPathName: "HOOKVAULT_KEY_FILE", envPath: "/k", wantPath: "/k"},
+		{
+			name:         "both envs",
+			envValueName: "HOOKVAULT_KEY_VALUE", envValue: "v",
+			envPathName: "HOOKVAULT_KEY_FILE", envPath: "/k",
+			errSub: "both set",
+		},
+		{
+			name:         "flag beats env",
+			flagValue:    "from-flag",
+			envValueName: "HOOKVAULT_KEY_VALUE", envValue: "from-env",
+			wantValue: "from-flag",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			value, path, err := pickCredential("key", tc.flagValue, tc.flagPath,
+				tc.envValueName, tc.envValue, tc.envPathName, tc.envPath)
+			if tc.errSub != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.errSub) {
+					t.Fatalf("err = %v, want containing %q", err, tc.errSub)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if value != tc.wantValue || path != tc.wantPath {
+				t.Fatalf("value=%q path=%q, want value=%q path=%q", value, path, tc.wantValue, tc.wantPath)
+			}
+		})
+	}
+}
+
+// The 1Password pattern: op run injects the value, no file on disk.
+func TestFetchEnvOnlyCredentials(t *testing.T) {
+	key, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+key.Token {
+			t.Errorf("Authorization = %q, want the token derived from the key", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(pageWith(t, key, "019a0000-0000-7000-8000-000000000009", `{"n":1}`, false)))
+	}))
+	defer server.Close()
+
+	t.Setenv("HOOKVAULT_URL", server.URL)
+	t.Setenv("HOOKVAULT_KEY_VALUE", vault.EncodeSecret(key.Secret[:]))
+	t.Setenv("HOOKVAULT_KEY_FILE", "")
+	t.Setenv("HOOKVAULT_TOKEN_VALUE", "")
+	t.Setenv("HOOKVAULT_TOKEN_FILE", "")
+
+	if err := runFetch([]string{"--format", "jsonl"}); err != nil {
+		t.Fatalf("runFetch with env only: %v", err)
+	}
+}
+
+func TestFetchRejectsAmbiguousEnv(t *testing.T) {
+	t.Setenv("HOOKVAULT_URL", "http://127.0.0.1:1")
+	t.Setenv("HOOKVAULT_KEY_VALUE", "x")
+	t.Setenv("HOOKVAULT_KEY_FILE", "/nowhere")
+	if err := runFetch([]string{"--format", "jsonl"}); err == nil || !strings.Contains(err.Error(), "both set") {
+		t.Fatalf("err = %v, want the ambiguity error", err)
+	}
+}

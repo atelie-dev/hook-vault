@@ -148,20 +148,22 @@ only logs and retries, and Ctrl-C exits with the cursor already saved.
 
 ### Flags that matter
 
-| Flag | Effect |
-|---|---|
-| `--key-file` | secret key; derives the token and decrypts. The whole point |
-| `--token-file` | token only — ciphertext plus a reason, no decryption |
-| `--cursor-file` | read and write a cursor file, so repeated runs resume |
-| `--cursor` | start after a specific event id |
-| `--format` | `auto` (default), `human`, `jsonl` |
-| `--raw-payload` | never interpret the payload: always a string, never embedded JSON |
-| `--watch` / `--interval` | page forever; idle poll interval |
-| `--include-rejected` | also list events that failed signature verification |
+| Flag | Env | Effect |
+|---|---|---|
+| `--key-file` | `HOOKVAULT_KEY_FILE` | secret key file; derives the token and decrypts. The whole point |
+| `--key` | `HOOKVAULT_KEY_VALUE` | the same, inline — for `op run` injection |
+| `--token-file` | `HOOKVAULT_TOKEN_FILE` | token only — ciphertext plus a reason, no decryption |
+| `--token` | `HOOKVAULT_TOKEN_VALUE` | the same, inline |
+| `--cursor-file` | | read and write a cursor file, so repeated runs resume |
+| `--cursor` | | start after a specific event id |
+| `--format` | | `auto` (default), `human`, `jsonl` |
+| `--raw-payload` | | never interpret the payload: always a string, never embedded JSON |
+| `--watch` / `--interval` | | page forever; idle poll interval |
+| `--include-rejected` | | also list events that failed signature verification |
 
-`HOOKVAULT_URL`, `HOOKVAULT_KEY_FILE` and `HOOKVAULT_TOKEN_FILE` set the same
-things, so a cron job is one line. The summary goes to stderr (`next_cursor=…
-has_more=… events=…`), keeping stdout clean for payloads.
+A flag always wins over the environment; setting both sources at the same level
+(a file and a value) is an error, not a silent choice. The summary goes to
+stderr (`next_cursor=… has_more=… events=…`), keeping stdout clean for payloads.
 
 If the event was sealed for another key — a rotation you have not completed —
 the CLI says so by `kid` instead of failing the whole page, and the key file
@@ -195,6 +197,19 @@ One key pair is one endpoint, so the file is per project — that is the
 guardrail, not an inconvenience: a project's leaked key exposes that project's
 archive and nothing else. `HOOKVAULT_TOKEN_FILE` exists for contexts that must
 not hold the secret key at all (a CI job that only asserts events arrive).
+
+If your secrets live in a vault that injects environment variables (1Password
+`op run`, direnv with `op inject`, a container secret store), skip the file and
+hand over the value:
+
+```bash
+op run --env-file=.env -- hook-vault fetch
+```
+
+with the environment holding `HOOKVAULT_URL` and `HOOKVAULT_KEY_VALUE`. On a
+machine where secrets can live on disk, the `*_FILE` variant is still the
+better one: a value in the environment is visible to anything running as the
+same user, and to child processes.
 
 ## Regenerating the token
 

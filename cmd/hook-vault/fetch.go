@@ -88,10 +88,10 @@ func runFetch(args []string) error {
 	fs := flag.NewFlagSet("hook-vault fetch", flag.ContinueOnError)
 	var (
 		baseURL       = fs.String("url", envOr("HOOKVAULT_URL", ""), "base URL of the ingest listener (env HOOKVAULT_URL)")
-		tokenFile     = fs.String("token-file", envOr("HOOKVAULT_TOKEN_FILE", ""), "file with the read API bearer token")
-		tokenInline   = fs.String("token", "", "read API bearer token inline (prefer --token-file)")
-		keyFile       = fs.String("key-file", envOr("HOOKVAULT_KEY_FILE", ""), "file with the 32-byte secret key (base64)")
-		keyInline     = fs.String("key", "", "secret key inline (prefer --key-file)")
+		tokenFile     = fs.String("token-file", "", "file with the read API bearer token (env HOOKVAULT_TOKEN_FILE)")
+		tokenInline   = fs.String("token", "", "read API bearer token inline (env HOOKVAULT_TOKEN_VALUE; prefer a file)")
+		keyFile       = fs.String("key-file", "", "file with the 32-byte secret key, base64 (env HOOKVAULT_KEY_FILE)")
+		keyInline     = fs.String("key", "", "secret key inline (env HOOKVAULT_KEY_VALUE; prefer a file)")
 		cursor        = fs.String("cursor", "", "start after this event id")
 		cursorFile    = fs.String("cursor-file", "", "read and update a cursor file, so repeated runs resume")
 		limit         = fs.Int("limit", 100, "page size (1–1000)")
@@ -150,9 +150,32 @@ func runFetch(args []string) error {
 	}
 	opts.color = opts.format == "human" && isTTY && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
 
+	keyValue, keyPath, err := pickCredential("key",
+		*keyInline, *keyFile,
+		"HOOKVAULT_KEY_VALUE", os.Getenv("HOOKVAULT_KEY_VALUE"),
+		"HOOKVAULT_KEY_FILE", os.Getenv("HOOKVAULT_KEY_FILE"))
+	if err != nil {
+		return err
+	}
+	tokenValue, tokenPath, err := pickCredential("token",
+		*tokenInline, *tokenFile,
+		"HOOKVAULT_TOKEN_VALUE", os.Getenv("HOOKVAULT_TOKEN_VALUE"),
+		"HOOKVAULT_TOKEN_FILE", os.Getenv("HOOKVAULT_TOKEN_FILE"))
+	if err != nil {
+		return err
+	}
+
 	switch {
-	case *keyFile != "":
-		raw, err := os.ReadFile(*keyFile)
+	case keyValue != "":
+		secret, err := decodeSecret(keyValue)
+		if err != nil {
+			return err
+		}
+		if opts.key, err = vault.FromSecret(secret); err != nil {
+			return err
+		}
+	case keyPath != "":
+		raw, err := os.ReadFile(keyPath)
 		if err != nil {
 			return fmt.Errorf("read key file: %w", err)
 		}
@@ -163,26 +186,18 @@ func runFetch(args []string) error {
 		if opts.key, err = vault.FromSecret(secret); err != nil {
 			return err
 		}
-		warnLoosePermissions(*keyFile, opts.errOut)
-	case *keyInline != "":
-		secret, err := decodeSecret(*keyInline)
-		if err != nil {
-			return err
-		}
-		if opts.key, err = vault.FromSecret(secret); err != nil {
-			return err
-		}
+		warnLoosePermissions(keyPath, opts.errOut)
 	}
 
 	switch {
-	case *tokenFile != "":
-		raw, err := os.ReadFile(*tokenFile)
+	case tokenValue != "":
+		opts.token = strings.TrimSpace(tokenValue)
+	case tokenPath != "":
+		raw, err := os.ReadFile(tokenPath)
 		if err != nil {
 			return fmt.Errorf("read token file: %w", err)
 		}
 		opts.token = strings.TrimSpace(string(raw))
-	case *tokenInline != "":
-		opts.token = strings.TrimSpace(*tokenInline)
 	}
 
 	// The token derives from the key: one file is enough to authenticate and
@@ -526,6 +541,22 @@ func warnLoosePermissions(path string, errOut io.Writer) {
 		fmt.Fprintf(errOut, "warning: %s is readable beyond its owner (mode %04o); chmod 600 it\n",
 			path, info.Mode().Perm())
 	}
+}
+
+// pickCredential resolves one credential from flags and environment, with a
+// rule that is boring on purpose: a flag always wins over the environment, and
+// two sources inside the same level is an error instead of a silent choice.
+func pickCredential(kind, flagValue, flagPath, envValueName, envValue, envPathName, envPath string) (value, path string, err error) {
+	if flagValue != "" || flagPath != "" {
+		if flagValue != "" && flagPath != "" {
+			return "", "", fmt.Errorf("pass --%s or --%s-file, not both", kind, kind)
+		}
+		return flagValue, flagPath, nil
+	}
+	if envValue != "" && envPath != "" {
+		return "", "", fmt.Errorf("%s and %s are both set; unset one", envValueName, envPathName)
+	}
+	return envValue, envPath, nil
 }
 
 func envOr(key, fallback string) string {
