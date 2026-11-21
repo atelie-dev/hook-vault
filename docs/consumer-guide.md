@@ -95,35 +95,73 @@ $plaintext = sodium_crypto_box_seal_open($ct, $keypair);
 
 `hook-vault fetch` pulls a page from the read API and, when given the secret
 key, decrypts each event on the way out. One credential file is enough: the
-token is derived from the key.
+token derives from the key.
 
 ```bash
 hook-vault fetch --url https://hooks.example.com --key-file ~/.hookvault.key
 ```
 
+### Two formats, chosen by where stdout goes
+
+| `--format` | Output |
+|---|---|
+| `auto` (default) | `human` on a terminal, `jsonl` in a pipe |
+| `human` | one block per event: coloured status, id, local timestamp, meta, key id, and the payload pretty-printed when it is JSON. Honours `NO_COLOR` |
+| `jsonl` | one JSON object per line |
+
 ```
---- 01a1fd33-54ef-7e10-8254-930c87105b23  2026-11-21T08:22:42Z  kid=kemazmmzvwa  status=stored
-    meta: {"source":"meta","event":"whatsapp_business_account"}
-{"object":"whatsapp_business_account","entry":[{"id":"1"}]}
+▌01a1fd3c-936a-7ba2-811a-f3c02030e108  2026-11-21 05:32:47  stored
+  meta {"source":"meta","event":"whatsapp_business_account"}
+  kid  kzr7kmv5imf
+  {
+    "object": "whatsapp_business_account",
+    "entry": [{ "id": "1" }]
+  }
 ```
 
-Flags worth knowing:
+```json
+{"id":"01a1fd3c-…","received_at":"…","kid":"kzr7kmv5imf","status":"stored","meta":{"source":"meta"},"decrypted":true,"payload":"{\"object\":\"whatsapp_business_account\"}"}
+```
+
+The jsonl schema is stable on purpose: `decrypted` is always present, `payload`
+is always a string (parse it however you like), and an event you cannot open
+carries `ct` plus `reason` instead. Nothing about the shape depends on which
+credential you used.
+
+### Watch mode
+
+`--watch` keeps paging and emits events as they arrive. With no cursor it starts
+at the tail (`/v1/me` → `cursor.newest`), so it does not replay the retention
+window:
+
+```bash
+hook-vault fetch --url https://hooks.example.com --key-file ~/.hookvault.key \
+  --watch --format jsonl | jq -c '{id, payload}'
+```
+
+`--cursor-file` makes a restart resume exactly where it stopped; `--interval`
+sets the idle poll (default 5s). A rejected token ends the loop, a network blip
+only logs and retries, and Ctrl-C exits with the cursor already saved.
+
+### Flags that matter
 
 | Flag | Effect |
 |---|---|
 | `--key-file` | secret key; derives the token and decrypts. The whole point |
-| `--token-file` | token only — you get ciphertext plus a reason, no decryption |
-| `--cursor-file` | read and write a cursor file, so repeated runs resume where they stopped |
+| `--token-file` | token only — ciphertext plus a reason, no decryption |
+| `--cursor-file` | read and write a cursor file, so repeated runs resume |
 | `--cursor` | start after a specific event id |
-| `--json` | one JSON object per line (`payload` when decrypted, `ct` when not) |
+| `--format` | `auto` (default), `human`, `jsonl` |
+| `--watch` / `--interval` | page forever; idle poll interval |
 | `--include-rejected` | also list events that failed signature verification |
 
 `HOOKVAULT_URL`, `HOOKVAULT_KEY_FILE` and `HOOKVAULT_TOKEN_FILE` set the same
 things, so a cron job is one line. The summary goes to stderr (`next_cursor=…
-has_more=…`), keeping stdout clean for payloads.
+has_more=… events=…`), keeping stdout clean for payloads.
 
 If the event was sealed for another key — a rotation you have not completed —
-the CLI says so by `kid` instead of failing the whole page.
+the CLI says so by `kid` instead of failing the whole page, and the key file
+being group/world-readable earns a warning on stderr.
 
 ## Regenerating the token
 

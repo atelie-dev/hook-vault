@@ -7,8 +7,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/atelie-dev/hook-vault/internal/vault"
 )
@@ -22,15 +26,25 @@ func sealFor(t *testing.T, key *vault.Key, payload string) string {
 	return base64.RawURLEncoding.EncodeToString(sealed)
 }
 
+func pageWith(t *testing.T, key *vault.Key, id, payload string, more bool) string {
+	t.Helper()
+	next := ""
+	if more {
+		next = `,"has_more":true`
+	} else {
+		next = `,"has_more":false`
+	}
+	return `{"events":[{"id":"` + id + `","received_at":"2026-11-21T07:49:27Z","kid":"` + key.KID +
+		`","alg":"x25519-xsalsa20poly1305-sealed","ct":"` + sealFor(t, key, payload) +
+		`","size":60,"status":"stored","meta":{"source":"meta"}}],"next_cursor":"` + id + `"` + next +
+		`,"oldest_cursor":"` + id + `","lag_seconds":2}`
+}
+
 func TestFetchPageAndDecrypt(t *testing.T) {
 	key, err := vault.Generate()
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-
-	body := `{"events":[{"id":"019a0000-0000-7000-8000-000000000001","received_at":"2026-11-21T07:49:27Z","kid":"` +
-		key.KID + `","alg":"x25519-xsalsa20poly1305-sealed","ct":"` + sealFor(t, key, `{"hello":"world"}`) +
-		`","size":60,"status":"stored","meta":{"source":"meta"}}],"next_cursor":"019a0000-0000-7000-8000-000000000001","has_more":false,"oldest_cursor":"019a0000-0000-7000-8000-000000000001","lag_seconds":2}`
 
 	var gotAuth string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +53,7 @@ func TestFetchPageAndDecrypt(t *testing.T) {
 			t.Errorf("limit = %q, want 100", r.URL.Query().Get("limit"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
+		_, _ = w.Write([]byte(pageWith(t, key, "019a0000-0000-7000-8000-000000000001", `{"hello":"world"}`, false)))
 	}))
 	defer server.Close()
 
@@ -63,7 +77,6 @@ func TestFetchPageAndDecrypt(t *testing.T) {
 		t.Fatalf("payload = %q", payload)
 	}
 
-	// A key from another rotation must not be silently wrong.
 	other, err := vault.Generate()
 	if err != nil {
 		t.Fatalf("generate other: %v", err)
@@ -71,8 +84,6 @@ func TestFetchPageAndDecrypt(t *testing.T) {
 	if _, ok, reason := decodeEvent(other, page.Events[0]); ok || !strings.Contains(reason, "sealed for kid") {
 		t.Fatalf("wrong key: ok=%v reason=%q", ok, reason)
 	}
-
-	// Without a key the event still lists, ciphertext and all.
 	if _, ok, reason := decodeEvent(nil, page.Events[0]); ok || !strings.Contains(reason, "no --key-file") {
 		t.Fatalf("no key: ok=%v reason=%q", ok, reason)
 	}
@@ -88,12 +99,12 @@ func TestFetchPageRejectsBadToken(t *testing.T) {
 	opts := &fetchOptions{baseURL: server.URL, token: "hv1_nope", limit: 10}
 	if _, err := fetchPage(context.Background(), server.Client(), opts); err == nil {
 		t.Fatal("a 401 must be an error")
-	} else if !strings.Contains(err.Error(), "rejected the token") {
-		t.Fatalf("error = %v", err)
+	} else if err != errUnauthorized {
+		t.Fatalf("error = %v, want errUnauthorized", err)
 	}
 }
 
-func TestEmitJSONCarriesPayload(t *testing.T) {
+func TestEmitJSONLHasStableSchema(t *testing.T) {
 	key, err := vault.Generate()
 	if err != nil {
 		t.Fatalf("generate: %v", err)
@@ -107,19 +118,235 @@ func TestEmitJSONCarriesPayload(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	opts := &fetchOptions{key: key, asJSON: true, out: &buf, errOut: &buf}
+	opts := &fetchOptions{key: key, format: "jsonl", out: &buf, errOut: &buf}
 	if err := emit(opts, event); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("jsonl must be one line per event, got %d", len(lines))
+	}
 	var decoded map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &decoded); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	if decoded["decrypted"] != true || decoded["payload"] != "raw body, not json" {
+		t.Fatalf("schema = %v", decoded)
+	}
+
+	// Without a key the same schema holds, with ct and a reason instead.
+	buf.Reset()
+	opts.key = nil
+	if err := emit(opts, event); err != nil {
+		t.Fatalf("emit sealed: %v", err)
+	}
 	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
-		t.Fatalf("not json: %v (%s)", err, buf.String())
+		t.Fatalf("not json: %v", err)
 	}
-	if decoded["payload"] != "raw body, not json" {
-		t.Fatalf("payload = %v", decoded["payload"])
+	if decoded["decrypted"] != false || decoded["ct"] == "" || decoded["reason"] == "" {
+		t.Fatalf("sealed schema = %v", decoded)
 	}
-	if decoded["id"] != event.ID {
-		t.Fatalf("id = %v", decoded["id"])
+}
+
+func TestEmitHumanPrettyPrintsJSON(t *testing.T) {
+	key, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	event := remoteEvent{
+		ID:     "019a0000-0000-7000-8000-000000000001",
+		KID:    key.KID,
+		CT:     sealFor(t, key, `{"a":1,"b":[2,3]}`),
+		Status: "stored",
+		Meta:   json.RawMessage(`{"source":"meta"}`),
+	}
+
+	var buf bytes.Buffer
+	opts := &fetchOptions{key: key, format: "human", out: &buf, errOut: &buf}
+	if err := emit(opts, event); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{event.ID, "stored", "kid", `"a": 1`, "\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("human output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Fatal("colour codes leaked into a non-tty buffer")
+	}
+}
+
+// lockedBuf is a goroutine-safe sink for the watch loop.
+type lockedBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestWatchLoopPagesAndPersistsCursor(t *testing.T) {
+	key, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	var mu sync.Mutex
+	requests := 0
+	var cursors []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		cursors = append(cursors, r.URL.Query().Get("cursor"))
+		first := requests == 1
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case first:
+			_, _ = w.Write([]byte(pageWith(t, key, "019a0000-0000-7000-8000-000000000001", `{"n":1}`, false)))
+		default:
+			_, _ = w.Write([]byte(`{"events":[],"next_cursor":null,"has_more":false,"oldest_cursor":null,"lag_seconds":2}`))
+		}
+	}))
+	defer server.Close()
+
+	cursorFile := filepath.Join(t.TempDir(), "cursor")
+	out := &lockedBuf{}
+	opts := &fetchOptions{
+		baseURL:    server.URL,
+		token:      key.Token,
+		key:        key,
+		limit:      100,
+		format:     "jsonl",
+		watch:      true,
+		interval:   20 * time.Millisecond,
+		cursorFile: cursorFile,
+		out:        out,
+		errOut:     &lockedBuf{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- watchLoop(ctx, server.Client(), opts) }()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		done := requests >= 2
+		mu.Unlock()
+		if done {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("watch did not poll again; requests=%d", requests)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-done; err != nil && ctx.Err() == nil {
+		t.Fatalf("watchLoop: %v", err)
+	}
+
+	mu.Lock()
+	gotRequests, gotCursors := requests, append([]string(nil), cursors...)
+	mu.Unlock()
+	if gotRequests < 2 {
+		t.Fatalf("watch made %d requests, want at least 2", gotRequests)
+	}
+	if gotCursors[1] != "019a0000-0000-7000-8000-000000000001" {
+		t.Fatalf("second page cursor = %q, want the last emitted id", gotCursors[1])
+	}
+
+	raw, err := os.ReadFile(cursorFile)
+	if err != nil {
+		t.Fatalf("cursor file: %v", err)
+	}
+	if strings.TrimSpace(string(raw)) != "019a0000-0000-7000-8000-000000000001" {
+		t.Fatalf("cursor file = %q", raw)
+	}
+}
+
+// Without --cursor-file the cursor still has to move, or the loop re-emits the
+// same page forever.
+func TestWatchLoopAdvancesCursorWithoutFile(t *testing.T) {
+	key, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	var mu sync.Mutex
+	var cursors []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		cursors = append(cursors, r.URL.Query().Get("cursor"))
+		first := len(cursors) == 1
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if first {
+			_, _ = w.Write([]byte(pageWith(t, key, "019a0000-0000-7000-8000-000000000002", `{"n":1}`, false)))
+			return
+		}
+		_, _ = w.Write([]byte(`{"events":[],"next_cursor":null,"has_more":false}`))
+	}))
+	defer server.Close()
+
+	out := &lockedBuf{}
+	opts := &fetchOptions{
+		baseURL:  server.URL,
+		token:    key.Token,
+		key:      key,
+		limit:    100,
+		format:   "jsonl",
+		watch:    true,
+		interval: 20 * time.Millisecond,
+		out:      out,
+		errOut:   &lockedBuf{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- watchLoop(ctx, server.Client(), opts) }()
+
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(cursors)
+		mu.Unlock()
+		if n >= 3 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("watch did not keep polling; requests=%d", n)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+
+	mu.Lock()
+	second := cursors[1]
+	mu.Unlock()
+	if second != "019a0000-0000-7000-8000-000000000002" {
+		t.Fatalf("second poll cursor = %q, want the emitted id", second)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("event emitted %d times, want 1:\n%s", len(lines), out.String())
 	}
 }
