@@ -17,6 +17,15 @@
     <label>Provider secret</label>
     <input name="verify_secret" autocomplete="off" placeholder="the secret you also set at the provider">
     <p class="hint">Stored write-only; it never comes back in a response. Required unless the profile is none.</p>
+    <div id="verify-token-row" class="hidden">
+      <label>Verify token (Meta handshake)</label>
+      <input name="verify_token" autocomplete="off" placeholder="any string you invent — the same goes in the Meta dashboard">
+      <p class="hint">
+        Meta signs payloads with the <b>App Secret</b> (Settings → Basic) above,
+        and checks the subscription with this token: it must match the
+        <b>Verify Token</b> field of the webhook config in the Meta dashboard.
+      </p>
+    </div>
   </fieldset>
 
   <fieldset>
@@ -99,6 +108,13 @@ for (const radio of modeRadios) {
   });
 }
 
+// The verify token only exists in the Meta flow.
+const profile = form.querySelector('select[name="verify"]');
+const toggleTokenRow = () =>
+  profile.value === 'meta' ? show('verify-token-row') : hide('verify-token-row');
+profile.addEventListener('change', toggleTokenRow);
+toggleTokenRow();
+
 const form = document.getElementById('create-form');
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -113,6 +129,9 @@ form.addEventListener('submit', async (event) => {
     max_bytes: Number(fields.get('max_bytes')) || undefined,
   };
   if (fields.get('verify') !== 'none') body.verify_secret = fields.get('verify_secret');
+  if (fields.get('verify') === 'meta' && fields.get('verify_token')) {
+    body.verify_token = fields.get('verify_token');
+  }
 
   let rendered;
   if (fields.get('key_mode') === 'generate') {
