@@ -172,8 +172,9 @@ hook-vault fetch … --since=0              # everything still stored
 
 The window is resolved by the server, against the same clock that stamped
 `received_at` — so "the last ten minutes" does not drift with your laptop's
-clock. The CLI also keeps a local cutoff, which makes it behave correctly even
-against a server that predates the parameter (it just pages further).
+clock. The CLI validates the value locally only to fail fast with a readable
+message; it never filters events itself, and CLI and server are expected to be
+the same version.
 
 `--since` composes with `--watch` (start inside the window, then follow) and is
 mutually exclusive with `--cursor`, `--cursor-file` and `--from-start`: only one

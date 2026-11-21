@@ -42,7 +42,6 @@ type fetchOptions struct {
 	watch           bool
 	interval        time.Duration
 	sinceParam      string
-	sinceCutoff     *time.Time
 	rawPayload      bool
 	format          string // human | jsonl
 	color           bool
@@ -150,17 +149,15 @@ func runFetch(args []string) error {
 		}
 	}
 
-	// --since accepts a window (resolved server-side, against the clock that
-	// stamped received_at) or an absolute instant. The local cutoff is a safety
-	// net: an older server ignores the unknown query parameter, and dropping
-	// stale events here keeps the output correct even then.
+	// --since is forwarded raw and resolved by the server, against the clock
+	// that stamped received_at. Parsing it here is only to fail fast with a
+	// readable message — the CLI and the server are expected to be the same
+	// version, so there is no compatibility shim for an older server.
 	opts.sinceParam = *since
 	if *since != "" && *since != "0" {
-		cutoff, err := timespec.Parse(*since, time.Now())
-		if err != nil {
+		if _, err := timespec.Parse(*since, time.Now()); err != nil {
 			return err
 		}
-		opts.sinceCutoff = &cutoff
 	}
 
 	// Output format: a person at a terminal gets colours, a pipe gets jsonl.
@@ -320,10 +317,6 @@ func watchLoop(ctx context.Context, client *http.Client, opts *fetchOptions) err
 func emitAll(opts *fetchOptions, page *remotePage) (int, error) {
 	count := 0
 	for _, event := range page.Events {
-		// Safety net for a server that ignores `since`: keep the window exact.
-		if opts.sinceCutoff != nil && event.ReceivedAt.Before(*opts.sinceCutoff) {
-			continue
-		}
 		if err := emit(opts, event); err != nil {
 			return count, err
 		}
