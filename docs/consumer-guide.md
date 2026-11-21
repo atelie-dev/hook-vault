@@ -91,6 +91,40 @@ $keypair = sodium_crypto_box_keypair_from_secretkey_and_publickey($sk, $pk);
 $plaintext = sodium_crypto_box_seal_open($ct, $keypair);
 ```
 
+## Read and decrypt in one command
+
+`hook-vault fetch` pulls a page from the read API and, when given the secret
+key, decrypts each event on the way out. One credential file is enough: the
+token is derived from the key.
+
+```bash
+hook-vault fetch --url https://hooks.example.com --key-file ~/.hookvault.key
+```
+
+```
+--- 01a1fd33-54ef-7e10-8254-930c87105b23  2026-11-21T08:22:42Z  kid=kemazmmzvwa  status=stored
+    meta: {"source":"meta","event":"whatsapp_business_account"}
+{"object":"whatsapp_business_account","entry":[{"id":"1"}]}
+```
+
+Flags worth knowing:
+
+| Flag | Effect |
+|---|---|
+| `--key-file` | secret key; derives the token and decrypts. The whole point |
+| `--token-file` | token only — you get ciphertext plus a reason, no decryption |
+| `--cursor-file` | read and write a cursor file, so repeated runs resume where they stopped |
+| `--cursor` | start after a specific event id |
+| `--json` | one JSON object per line (`payload` when decrypted, `ct` when not) |
+| `--include-rejected` | also list events that failed signature verification |
+
+`HOOKVAULT_URL`, `HOOKVAULT_KEY_FILE` and `HOOKVAULT_TOKEN_FILE` set the same
+things, so a cron job is one line. The summary goes to stderr (`next_cursor=…
+has_more=…`), keeping stdout clean for payloads.
+
+If the event was sealed for another key — a rotation you have not completed —
+the CLI says so by `kid` instead of failing the whole page.
+
 ## Regenerating the token
 
 The token is `"hv1_" + base64url(HKDF-SHA256(ikm=secret, salt=empty, info="hook-vault.auth.v1", L=32))`.

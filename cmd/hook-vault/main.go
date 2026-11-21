@@ -36,6 +36,7 @@ Usage:
   hook-vault serve      run the ingest and control-plane listeners
   hook-vault migrate    apply schema migrations and exit
   hook-vault keygen     create a recipient key pair and its API token
+  hook-vault fetch      read events (decrypting them when given the key)
   hook-vault open       decrypt a payload with its secret key
   hook-vault version    print the version
 `
@@ -54,6 +55,8 @@ func main() {
 		err = runMigrate(os.Args[2:])
 	case "keygen":
 		err = runKeygen(os.Args[2:])
+	case "fetch":
+		err = runFetch(os.Args[2:])
 	case "open":
 		err = runOpen(os.Args[2:])
 	case "version":

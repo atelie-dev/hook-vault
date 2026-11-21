@@ -48,7 +48,7 @@ Integration tests **drop and recreate the public schema**. Never point
 ## Layout
 
 ```
-cmd/hook-vault/       subcommands: serve, migrate, keygen, open
+cmd/hook-vault/       subcommands: serve, migrate, keygen, fetch, open
 internal/vault/       sealed box + HKDF token derivation (the crypto contract)
 internal/store/       all SQL; the only place that knows the schema
 internal/httpapi/     data plane (ingest, read) and control plane (management)
