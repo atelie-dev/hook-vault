@@ -1,4 +1,4 @@
-<!-- Context: project-intelligence/technical | Priority: critical | Version: 1.0 | Updated: 2026-11-21 -->
+<!-- Context: project-intelligence/technical | Priority: critical | Version: 1.1 | Updated: 2026-11-21 -->
 
 # Technical Domain — hook-vault
 
@@ -32,13 +32,14 @@ threat model; it is the product, not decoration.
 | Panel | `html/template` + `go:embed` + vanilla JS | single binary, no Node in the build, no runtime assets |
 | Crypto | `nacl/box` sealed box + stdlib HKDF | byte-compatible with libsodium (PyNaCl vector in tests) |
 
-`CGO_ENABLED=0` everywhere — the binary is static, which is what makes the NixOS
+`CGO_ENABLED=0` everywhere: the binary is static, which is what makes the NixOS
 package and `nix run github:atelie-dev/hook-vault` trivial.
 
 ## Layout, and why it is split this way
 
 ```
-cmd/hook-vault/       serve · migrate · keygen · fetch · open
+cmd/hook-vault/       serve · migrate · keygen · fetch · open · version
+internal/config/      flags + HOOKVAULT_* env; refuses unsafe combinations
 internal/vault/       the crypto contract (sealed box, HKDF token, kid)
 internal/store/       ALL SQL — the only package that knows the schema
 internal/httpapi/     data plane (ingest + read) and control plane (admin API + panel pages)
@@ -49,8 +50,9 @@ migrations/           embedded SQL, applied by `serve` and `migrate`
 ```
 
 The two-listener split (`--ingest-addr` / `--admin-addr`) is a **product**
-decision: only one of them is meant to face the internet. The binary knows
-nothing about Caddy, Cloudflare or Tailscale.
+decision: only one faces the internet; the binary knows nothing about Caddy,
+Cloudflare or Tailscale. `config` defaults admin to loopback and demands
+`--admin-token` as soon as it is not.
 
 ## The three contracts — breaking one is a security bug
 
@@ -69,27 +71,30 @@ nothing about Caddy, Cloudflare or Tailscale.
    **evicts the oldest, never rejects** a delivery: a 5xx makes providers retry
    and amplifies. Counters move in the same statement as the insert/delete.
 
-`AGENTS.md` lists these as numbered invariants. Read it before touching `vault`,
-`store` or `read.go`.
+`AGENTS.md` lists these as numbered invariants — read it before touching `vault`, `store` or `read.go`.
 
-## Read API surface
+## Routes
 
-`GET /v1/events` (bearer token derived from the key; the token *is* the endpoint
-identity, so there is no endpoint id in the path):
+**Data plane** (`--ingest-addr`, public):
+- `POST /in/{slug}` ingest; `GET /in/{slug}` handshake (Meta callback check).
+  Profiles: `github`, `meta` and `generic` share one HMAC path
+  (`X-Hub-Signature-256`; `generic` reads `X-HookVault-Signature`), `stripe` has
+  its own scheme with a 5-minute tolerance, `none` skips verification.
+- `GET /v1/events` — bearer token derived from the key; the token *is* the
+  endpoint identity, so there is no endpoint id in the path. Params `cursor`
+  (`id > cursor`, opaque), `limit` (1–1000, default 100), `since` (`10m`,
+  `2hours`, RFC3339 or `0`, resolved **server-side**), `include_rejected`.
+  Response: `events[]` (`id`, `received_at`, `kid`, `alg`, `ct` base64url,
+  `size`, `status`, `meta`), `next_cursor`, `has_more`, `oldest_cursor`,
+  `lag_seconds`. `meta` is the only plaintext (source, event type, delivery id,
+  content type, user agent) — never the body, never credential-bearing headers.
+  Our bodies are the response's `ct`; the API never returns plaintext.
+- `GET /v1/me` (endpoint behind the token + cursor bounds), `GET /healthz`.
 
-| Param | Meaning |
-|---|---|
-| `cursor` | return events with `id > cursor`; opaque, from `next_cursor` |
-| `limit` | 1–1000, default 100 |
-| `since` | window: `10m`, `2hours`, RFC3339, or `0`; resolved **server-side** against `received_at`'s clock |
-| `include_rejected` | also return events that failed signature verification |
-
-Response: `events[]` (`id`, `received_at`, `kid`, `alg`, `ct` base64url, `size`,
-`status`, `meta`), `next_cursor`, `has_more`, `oldest_cursor`, `lag_seconds`.
-`meta` is the only plaintext (source, event type, delivery id, content type,
-user agent) — never the body, never headers that may carry credentials.
-
-Our bodies are the response's `ct`; the API never returns plaintext.
+**Control plane** (`--admin-addr`, panel origin): `/v1/endpoints` (POST, GET),
+`/v1/endpoints/{id}` (GET, PATCH — only `disabled` toggles), `/{id}/keys`
+(GET, POST) and `/{id}/keys/{kid}` (DELETE = revoke), `/{id}/stats` (hourly
+buckets). No endpoint delete exists; removal is still SQL.
 
 ## CLI (consumer side)
 
@@ -99,80 +104,70 @@ unique index on `token_sha256`), `open` (single ciphertext), and `fetch`:
 - `--key-file` / `HOOKVAULT_KEY_FILE`, `--key` / `HOOKVAULT_KEY_VALUE` → derives
   the token AND decrypts; `--token-file` / `HOOKVAULT_TOKEN_VALUE` → ciphertext only.
 - Flags beat env; two sources at the same level is an error, not a silent pick.
-- `--format auto|human|jsonl` (auto = human on a TTY), `--watch`, `--from-start`,
-  `--since`, `--cursor-file`, `--raw-payload`, `--include-rejected`.
-- jsonl schema is stable: `decrypted` always present; `payload` is **embedded
-  JSON** when the content-type says JSON and the body parses (compacted, so one
-  line per event), otherwise a string — `--raw-payload` forces the string.
+- `--format auto|human|jsonl` (auto = human on a TTY), `--watch`, `--interval`,
+  `--from-start`, `--since`, `--cursor-file`, `--raw-payload`, `--include-rejected`.
+- jsonl schema is stable: `decrypted` always; `payload` is **embedded JSON** when
+  the content-type says JSON and the body parses (compacted), else a string;
+  `--raw-payload` forces the string.
 
 ## Panel (`internal/webui` + `httpapi/panel.go`)
 
 - Served by the **control plane**; session = stateless `HttpOnly` cookie
   `HMAC(adminToken, nonce)`. No session store, no user table; SSO belongs in a
   proxy in front.
-- Panel pages redirect unauthenticated visitors to `/login`; `/v1/*` returns a
-  JSON 401 (that is what the panel's own `fetch` calls act on). `/healthz` and
-  `/static/*` need no credential.
+- Pages redirect unauthenticated visitors to `/login`; `/v1/*` returns a JSON 401
+  (that is what the panel's own `fetch` calls act on). `/healthz` and `/static/*`
+  need no credential. Templates today: `login`, `layout`, `endpoints`, `create` —
+  no detail page yet.
 - Key generation runs **in the browser** (WebCrypto X25519 + HKDF, zero vendored
-  JS). The form always offers the second path — paste `public_key` +
-  `token_sha256` from `hook-vault keygen` — because a panel is only as
-  trustworthy as the code it serves.
+  JS); the form always offers the paste-`public_key`+`token_sha256` path from
+  `hook-vault keygen`, because a panel is only as trustworthy as its own code.
 
 ## Testing
 
 ```bash
 CGO_ENABLED=0 go test ./...                       # unit
-HOOKVAULT_TEST_DATABASE_URL='host=/tmp/pg port=5432 user=postgres dbname=hookvault' \
+HOOKVAULT_TEST_DATABASE_URL='host=/tmp port=5432 user=postgres dbname=hookvault' \
   go test ./internal/httpapi/ -count=1            # integration (DROPS the public schema!)
 ```
 
-Ephemeral server for tests:
+Ephemeral server: `nix shell nixpkgs#postgresql_18 -c sh -c 'initdb -D /tmp/hv-pg -U postgres --auth=trust --locale=C && pg_ctl -D /tmp/hv-pg -l /tmp/hv-pg.log -o "-p 55432 -k /tmp" start && createdb -h /tmp -p 55432 -U postgres hookvault'`
 
-```bash
-nix shell nixpkgs#postgresql_18 -c sh -c '
-  initdb -D /tmp/hv-pg -U postgres --auth=trust --locale=C >/dev/null &&
-  pg_ctl -D /tmp/hv-pg -l /tmp/hv-pg.log -o "-p 55432 -k /tmp" start &&
-  createdb -h /tmp -p 55432 -U postgres hookvault'
-```
-
-State of the net: unit + integration are thorough (crypto vector, cursor walk,
-retention, session, profile coverage, since window, watch loop). **No JS test
-exists** — the panel's JavaScript is only exercised by hand; see gaps.
+Unit + integration are thorough (crypto vector, cursor walk, retention, session,
+profiles, `since`, watch). **No JS test exists** — panel JS is exercised by hand.
 
 ## Build & release
 
 - `nix build .#default`, `nix run github:atelie-dev/hook-vault -- <verb>`.
-- Consumed by `atelie-server` as a flake input (`modules/hook-vault.nix`,
-  `inputs.nixpkgs.follows` there is safe: Go 1.26.10 in nixos-26.05).
+- Flake `version = "0.1.0"`, ldflags `-s -w -X main.version=…`; consumed by
+  `atelie-server` as a flake input (`modules/hook-vault.nix`, where
+  `inputs.nixpkgs.follows` is safe: Go 1.26.10 in nixos-26.05).
 - Bump = `nix flake update hook-vault` + commit + `deploy .#sp2-sd-atelie-1`.
-- No tags/releases yet; the flake input pins a commit.
+  No tags/releases; the input pins a commit.
 
 ## Deliberate decisions — challenge before "fixing"
 
 - **No user accounts** in the panel, ever (AGENTS invariant 7).
-- **No endpoint delete in the API.** Only `disabled`. A real delete (with
-  confirmation, refusing endpoints that hold events) is planned; today it is
-  done with SQL, which is not a supported path.
-- **No retries, fan-out or transformations.** This is an append-only log; if
-  someone needs push delivery, Svix or Hookdeck Outpost goes in front.
-- **Read API sits on the data plane**, so it is reachable publicly. Agreed to
-  gate `/v1/*` to the tailnet at Caddy (only `/in/*` needs to be public) —
-  planned, not implemented.
+- **No endpoint delete in the API.** Only `disabled`; a real delete (refusing
+  endpoints that hold events) is planned, and today it is done with SQL, which
+  is not a supported path.
+- **No retries, fan-out or transformations.** Append-only log; push delivery
+  belongs in front (Svix, Hookdeck Outpost).
+- **Read API sits on the data plane**, so it is public. Agreed to gate `/v1/*`
+  to the tailnet at Caddy (only `/in/*` must be public) — planned, not done.
 - **`--since` is not a compatibility shim.** CLI and server are expected to be
   the same version; the CLI validates locally but never filters.
 
 ## Known gaps, in the order they probably matter
 
-1. Endpoint detail page: hourly stats, keys with revoke, policy editor, disable,
-   and delete-with-confirmation.
-2. `DELETE`/`disabled` semantics in the management API (today only `disabled`).
+1. Panel detail page. The API already serves `/stats` and key revoke; the screen
+   is missing (stats, keys, policy editor, disable, delete-with-confirmation).
+2. `DELETE` semantics for endpoints; the management API offers only `disabled`.
 3. "Recover token" in the panel: paste the secret, derive token + hash in the
    browser, nothing travels.
-4. A JS quality gate: `eslint` with `no-use-before-define`, or a jsdom smoke test.
-   The TDZ bug below shipped precisely because nothing executes the panel's JS.
-5. The panel result block does not tell the operator that the token is
-   re-derivable from the key — losing the token without the key file looks like
-   data loss.
+4. A JS quality gate: `eslint` with `no-use-before-define`, or a jsdom smoke
+   test. The TDZ bug below shipped because nothing executes the panel's JS.
+5. The result block does not tell the operator the token is re-derivable from the key, so losing it looks like data loss.
 6. Partitioning `event` by month if volume justifies it (today: batched deletes
    + autovacuum).
 
@@ -185,23 +180,20 @@ exists** — the panel's JavaScript is only exercised by hand; see gaps.
 - **Module TDZ kills every listener silently.** `create.html` referenced `form`
   before declaring it: no submit listener attached, the form fell back to a
   native GET, and nothing was logged anywhere. Declare DOM refs at the top.
-- **A subdomain is not a zone.** lego resolves `webhooks.atelie.dev.br` by walking
-  up to `atelie.dev.br`; `GET /zones?name=<subdomain>` correctly returns empty.
-- **`Zone Read` is required for lego**: with only `DNS Write`, `GET /zones?name=`
-  lists nothing and the challenge fails like a dead token.
-- **Environment files need `KEY=VALUE`.** A bare token in `EnvironmentFile` is
-  never read; the sops value is `CLOUDFLARE_DNS_API_TOKEN=<token>`.
-- **There is no `min(uuid)` aggregate in PostgreSQL.** Use `ORDER BY id LIMIT 1`
-  on `(endpoint_id, id)`.
-- **Gunicorn-style "it works on retry" hides deploy failures**: hook-vault once
-  started before `postgresql-setup` created its role; deploy-rs aborted even
-  though the second start was healthy. Ordering is a unit dependency, not a hope.
+- **A subdomain is not a zone.** lego walks up to `atelie.dev.br`; `GET /zones?name=<subdomain>` returns empty, correctly.
+- **`Zone Read` is required for lego**: with only `DNS Write`, `GET /zones?name=` finds nothing and the challenge looks like a dead token.
+- **Environment files need `KEY=VALUE`.** A bare token in `EnvironmentFile` is never read; sops must write `CLOUDFLARE_DNS_API_TOKEN=<token>`.
+- **There is no `min(uuid)` aggregate.** Use `ORDER BY id LIMIT 1` on `(endpoint_id, id)`.
+- **"It works on retry" hides deploy failures**: hook-vault once started before
+  `postgresql-setup` created its role; deploy-rs aborted though the second start
+  was healthy. Ordering is a unit dependency, not a hope.
 
 ## Codebase references
 
 **Product/contract**: `README.md` (threat model + API), `docs/consumer-guide.md`
-(what a consumer implements: decrypt snippets, fetch formats, per-project setup).
+(decrypt snippets, fetch formats, per-project setup).
 **Rules**: `AGENTS.md`. **Schema**: `migrations/0001_init.sql`.
+**Runtime config**: `internal/config/config.go` (flags vs `HOOKVAULT_*`).
 **Deployment** (other repo, `atelie-server`): `modules/hook-vault.nix`,
 `infra/cloudflare-token/`, `infra/dns/atelie/main.tofu`, and the ops log
 `PLANNED.md` (2026-11-21 entries: the service, and the dead DNS-01 token incident).
