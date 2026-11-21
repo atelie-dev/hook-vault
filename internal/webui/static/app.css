@@ -1,17 +1,62 @@
-/* hook-vault control-plane UI — hand-rolled, no framework, no build step. */
+/* hook-vault control-plane UI — hand-rolled, no framework, no build step.
+   Theme: light is the default; dark applies via prefers-color-scheme or a
+   manual data-theme on <html> (set before first paint by layout.html).
+   The two dark blocks below are deliberately duplicated (no build step to
+   DRY them) and MUST be kept identical. Tokens approved 2026-11-21 —
+   rationale per token in .opencode/context/design/brand.md. */
 
 :root {
-  --bg: #0f1115;
-  --panel: #171a21;
-  --panel-2: #1d2129;
-  --line: #2a2f3a;
-  --text: #e6e9ef;
-  --muted: #9aa3b2;
-  --accent: #6ea8fe;
+  color-scheme: light;
+  --bg: #f6f8fa;
+  --panel: #ffffff;
+  --panel-2: #eef1f6;
+  --input-bg: #ffffff; /* editable surfaces: crisp field on white cards (critic 2026-11-21) */
+  --line: #d7dde6;
+  --text: #17202e;
+  --muted: #5b6675;
+  --accent: #0969da;   /* 5.2:1 on white — AA for text and button fills */
+  --on-accent: #ffffff;
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --err: #cf222e;
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* Dark — keep byte-identical with the media-query block below. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0e14;
+  --panel: #12161f;
+  --panel-2: #1a2130;
+  --input-bg: #0b0e14;
+  --line: #242d3d;
+  --text: #e7ecf5;
+  --muted: #98a2b3;
+  --accent: #6ea8fe;   /* the de facto brand hue, kept */
+  --on-accent: #0b1020;
   --ok: #7bd88f;
   --warn: #f0b357;
   --err: #ef6b6b;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0b0e14;
+    --panel: #12161f;
+    --panel-2: #1a2130;
+    --line: #242d3d;
+    --text: #e7ecf5;
+    --muted: #98a2b3;
+    --accent: #6ea8fe;
+    --on-accent: #0b1020;
+    --ok: #7bd88f;
+    --warn: #f0b357;
+    --err: #ef6b6b;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -20,16 +65,28 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 15px/1.5 var(--font-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.7rem 1.2rem;
+  gap: 0.8rem;
+  padding: 0.6rem 1.2rem;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .brand {
@@ -48,85 +105,250 @@ footer {
   padding: 1.5rem 0 2rem;
 }
 
-h1 { font-size: 1.15rem; margin: 0 0 1rem; }
+h1 { font-size: 1.2rem; margin: 0 0 1rem; letter-spacing: -0.01em; }
 h2 { font-size: 1rem; margin: 1.4rem 0 0.5rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+
+/* Page head: title left, primary action right. Children size to content —
+   the old blanket flex-grow rule stretched buttons into bars. */
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin: 0 0 1rem;
+}
+.page-head h1 { margin: 0; }
+
+.crumb { margin: 0 0 0.6rem; font-size: 0.85rem; }
+.crumb a { color: var(--muted); text-decoration: none; }
+.crumb a:hover { color: var(--accent); }
 
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius);
   padding: 1rem 1.1rem;
   margin-bottom: 1rem;
 }
 
 .card.secondary { background: var(--panel-2); }
 
-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
-th {
-  text-align: left;
-  color: var(--muted);
-  font-weight: 500;
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 0.4rem 0.6rem;
-  border-bottom: 1px solid var(--line);
+/* Endpoint cards (the list outgrew the table: few rows, many attributes,
+   and 375px must not scroll sideways). */
+.endpoints { display: grid; gap: 0.9rem; margin-bottom: 1rem; }
+.endpoint { margin-bottom: 0; padding: 0.9rem 1rem; min-width: 0; /* grid item: shrink below URL max-content */ }
+.endpoint-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.endpoint-name { font-weight: 650; font-size: 1rem; }
+.ingest {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.55rem 0 0.65rem;
+  padding: 0.4rem 0.7rem;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
 }
-td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
-tr:last-child td { border-bottom: none; }
+.ingest-lb {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.ingest-url {
+  flex: 1 1 auto;
+  min-width: 0; /* flex items refuse to shrink below content without this */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.84rem;
+}
+.stats {
+  /* Fixed tracks so Events/Stored/Policy/Key align across cards — a content-
+     sized flex row lets one long value shift every following column. */
+  display: grid;
+  grid-template-columns: minmax(4.5rem, 0.6fr) minmax(8.5rem, 1.2fr) minmax(8.5rem, 1.2fr) minmax(7rem, 1fr);
+  gap: 0.65rem 1.5rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.65rem;
+}
+.stat .lb {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.stat .vl {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-top: 0.1rem;
+}
 
 code, .mono { font-family: var(--mono); font-size: 0.88rem; }
-.key { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 0.15rem 0.4rem; word-break: break-all; }
+.key {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.12rem 0.4rem;
+  word-break: break-all;
+}
 
+/* Badges tint from their own color so one class covers status + variants. */
 .badge {
   display: inline-block;
-  font-size: 0.75rem;
-  padding: 0.1rem 0.5rem;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  padding: 0.05rem 0.5rem;
   border-radius: 999px;
-  border: 1px solid var(--line);
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  background: color-mix(in srgb, currentColor 12%, transparent);
   color: var(--muted);
+  font-weight: 500;
+  white-space: nowrap;
 }
-.badge.ok   { color: var(--ok);   border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
-.badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
-.badge.err  { color: var(--err);  border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+.badge.ok, td .badge.ok   { color: var(--ok); }
+.badge.warn, td .badge.warn { color: var(--warn); }
+.badge.err, td .badge.err  { color: var(--err); }
 
 button, .button {
   font: inherit;
   color: var(--text);
   background: var(--panel-2);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0.45rem 0.9rem;
+  border-radius: var(--radius-sm);
+  padding: 0.42rem 0.85rem;
   cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
-button:hover { border-color: var(--accent); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #0b1020; font-weight: 600; }
-button.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
-button.small { padding: 0.2rem 0.55rem; font-size: 0.8rem; }
+a.button { display: inline-block; text-decoration: none; line-height: 1.3; }
+button:hover, .button:hover { border-color: var(--accent); }
+button.primary, .button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+button.primary:hover, .button.primary:hover {
+  background: color-mix(in srgb, var(--accent) 86%, var(--on-accent));
+}
+button.danger, .button.danger {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 40%, transparent);
+  background: transparent;
+}
+button.small, .button.small { padding: 0.18rem 0.55rem; font-size: 0.78rem; }
 
-label { display: block; margin: 0.8rem 0 0.25rem; color: var(--muted); font-size: 0.85rem; }
+label { display: block; margin: 0.8rem 0 0.3rem; color: var(--muted); font-size: 0.85rem; }
+
 input, select {
   font: inherit;
   color: var(--text);
-  background: var(--bg);
+  background: var(--input-bg);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 0.45rem 0.7rem;
   width: 100%;
 }
-input:focus, select:focus { outline: none; border-color: var(--accent); }
+input:not([type="radio"]):not([type="checkbox"]):focus, select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* Size picker: the number takes the width, the unit select stays
+   content-sized (bytes/KiB/MiB/GiB). */
+.size-row { display: flex; gap: 0.5rem; }
+.size-row input { flex: 1 1 auto; min-width: 0; }
+.size-row select { flex: 0 0 auto; width: auto; }
+
+/* Radios and checkboxes are content-sized; inheriting the input width rule
+   stretched them into invisible full-width hit areas (baseline defect). */
+input[type="radio"], input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+/* Inline radio/checkbox choices inside a .row (keygen source picker). */
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0.2rem 0;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+.choice code { font-size: 0.85rem; }
+
+.row { display: flex; gap: 0.8rem; flex-wrap: wrap; align-items: center; }
+/* Only fields grow; rows that carry actions or choices stay content-sized. */
+.row.grow > * { flex: 1 1 220px; }
 
 fieldset {
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 0.6rem 1rem 1rem;
-  margin: 1rem 0;
+  border-radius: var(--radius);
+  padding: 0.4rem 1rem 1rem;
+  margin: 1.1rem 0;
 }
-legend { color: var(--muted); font-size: 0.85rem; padding: 0 0.4rem; }
+legend {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  padding: 0 0.45rem;
+}
 
-.hint { color: var(--muted); font-size: 0.85rem; }
+.hint { color: var(--muted); font-size: 0.85rem; margin: 0.55rem 0 0; }
+.card > label:first-child, fieldset > label:first-of-type { margin-top: 0.35rem; }
 .hidden { display: none; }
-.row { display: flex; gap: 0.8rem; flex-wrap: wrap; align-items: center; }
-.row > * { flex: 1 1 200px; }
 .error { color: var(--err); }
 .notice { color: var(--warn); }
+
+/* Empty state: centered, with the next action at hand. */
+.empty { text-align: center; padding: 2.2rem 1rem; }
+.empty .button { margin-top: 0.6rem; }
+.empty p { margin: 0.2rem 0; }
+
+/* Login centers itself in the viewport space between header and footer. */
+.auth {
+  display: grid;
+  place-items: center;
+  min-height: clamp(16rem, calc(100dvh - 14rem), 44rem);
+}
+.auth .card { width: min(26rem, 100%); margin-bottom: 0; }
+
+/* Theme toggle: icon shows the theme a click will switch TO. */
+.icon-btn {
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+.icon-btn:hover { border-color: var(--line); color: var(--text); }
+.icon-btn svg { width: 1.05rem; height: 1.05rem; }
+.icon-sun { display: none; }
+.icon-moon { display: block; }
+:root[data-theme="dark"] .icon-sun { display: block; }
+:root[data-theme="dark"] .icon-moon { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .icon-sun { display: block; }
+  :root:not([data-theme="light"]) .icon-moon { display: none; }
+}
+
+@media (max-width: 640px) {
+  main { margin: 1rem auto; }
+  .page-head { align-items: flex-start; flex-direction: column; }
+  .card { padding: 0.85rem; }
+  fieldset { padding: 0.35rem 0.75rem 0.85rem; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

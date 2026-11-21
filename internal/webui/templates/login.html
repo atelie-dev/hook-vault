@@ -1,16 +1,18 @@
 {{define "content"}}
-<div class="card" style="max-width:26rem">
-  <h1>Sign in</h1>
-  <p class="hint">
-    Paste the admin token (<code>--admin-token</code>). It is checked against the
-    server and turned into an <code>HttpOnly</code> session cookie; the token
-    itself is not stored by the browser.
-  </p>
-  {{if .Error}}<p class="error">That token did not match.</p>{{end}}
-  <form method="post" action="/login">
-    <label>Admin token</label>
-    <input type="password" name="token" autofocus autocomplete="off">
-    <div style="margin-top:1rem"><button class="primary" type="submit">Sign in</button></div>
-  </form>
+<div class="auth">
+  <div class="card">
+    <h1>Sign in</h1>
+    <p class="hint">
+      Paste the admin token (<code>--admin-token</code>). It is checked against the
+      server and turned into an <code>HttpOnly</code> session cookie; the token
+      itself is not stored by the browser.
+    </p>
+    {{if .Error}}<p class="error">That token did not match.</p>{{end}}
+    <form method="post" action="/login">
+      <label>Admin token</label>
+      <input type="password" name="token" autofocus autocomplete="off">
+      <div style="margin-top:1rem"><button class="primary" type="submit">Sign in</button></div>
+    </form>
+  </div>
 </div>
 {{end}}

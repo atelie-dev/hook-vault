@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -139,10 +140,19 @@ func (s *Server) render(w http.ResponseWriter, _ *http.Request, status int, page
 		return
 	}
 
+	// Execute into a buffer before touching the ResponseWriter: an execution
+	// error after WriteHeader would ship a truncated page as a 200. Failure
+	// must be loud — a 500 the client can see — never a half-rendered page.
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, "layout.html", data); err != nil {
+		s.logger.Error("render panel page", "page", page, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	if err := t.ExecuteTemplate(w, "layout.html", data); err != nil {
-		s.logger.Error("render panel page", "page", page, "error", err)
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		s.logger.Error("write panel page", "page", page, "error", err)
 	}
 }
 
@@ -195,6 +205,7 @@ func (s *Server) panelEndpoints(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, http.StatusOK, "endpoints.html", &endpointsPage{
 		pageData:  pageData{Title: "Endpoints", Version: s.version, LoggedIn: s.hasSession(r)},
 		Endpoints: rows,
+		PublicURL: s.publicURL,
 	})
 }
 

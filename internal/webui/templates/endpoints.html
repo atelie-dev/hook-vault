@@ -1,37 +1,56 @@
 {{define "content"}}
-<div class="row" style="justify-content:space-between;margin:0 0 1rem">
-  <h1 style="margin:0">Endpoints</h1>
-  <a class="button primary" href="/new" style="text-decoration:none">New endpoint</a>
+<div class="page-head">
+  <h1>Endpoints</h1>
+  <a class="button primary" href="/new">New endpoint</a>
 </div>
 
 {{if .Endpoints}}
-<div class="card" style="padding:0 0.4rem">
-  <table>
-    <thead>
-      <tr><th>Endpoint</th><th>Ingest slug</th><th>Verify</th><th>Events</th><th>Stored</th><th>Policy</th><th>Key</th></tr>
-    </thead>
-    <tbody>
-      {{range .Endpoints}}
-      <tr>
-        <td>{{.Name}}{{if .DisabledAt}} <span class="badge err">disabled</span>{{end}}</td>
-        <td><code>{{.Slug}}</code></td>
-        <td><span class="badge">{{.Verify}}</span></td>
-        <td class="mono">{{.EventsUsed}}{{if .EvictedEvents}} <span class="badge warn" title="retention evicted {{.EvictedEvents}} events">evicting</span>{{end}}</td>
-        <td class="mono">{{bytes .BytesUsed}}{{if .MaxBytes}} / {{bytes .MaxBytes}}{{end}}</td>
-        <td class="mono">{{if .RetentionDays}}{{.RetentionDays}}d{{else}}∞{{end}}{{if .MaxBytes}} · {{end}}{{if .MaxBytes}}{{bytes .MaxBytes}}{{else}}no cap{{end}}</td>
-        <td><code>{{if .ActiveKID}}{{.ActiveKID}}{{else}}<span class="badge err">none</span>{{end}}</code></td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
+<div class="endpoints">
+  {{range .Endpoints}}
+  <div class="card endpoint">
+    <div class="endpoint-head">
+      <span class="endpoint-name">{{.Name}}</span>
+      {{if .DisabledAt}}<span class="badge err">disabled</span>{{end}}
+      <span class="badge">{{.Verify}}</span>
+    </div>
+    <div class="ingest">
+      <span class="ingest-lb">ingest</span>
+      <code class="ingest-url">{{if $.PublicURL}}{{$.PublicURL}}{{end}}/in/{{.Slug}}</code>
+      <button class="small" type="button" data-copy-value="{{if $.PublicURL}}{{$.PublicURL}}{{end}}/in/{{.Slug}}" title="copy ingest URL">copy</button>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="lb">Events</div><div class="vl">{{.EventsUsed}}{{if .EvictedEvents}} <span class="badge warn" title="retention evicted {{.EvictedEvents}} events">evicting</span>{{end}}</div></div>
+      <div class="stat"><div class="lb">Stored</div><div class="vl">{{bytes .BytesUsed}}{{if .MaxBytes}} / {{bytes .MaxBytes}}{{end}}</div></div>
+      <div class="stat"><div class="lb">Policy</div><div class="vl">{{if .RetentionDays}}{{.RetentionDays}}d{{if .MaxBytes}} · {{bytes .MaxBytes}}{{else}} · no cap{{end}}{{else}}{{if .MaxBytes}}{{bytes .MaxBytes}}{{else}}no cap{{end}}{{end}}</div></div>
+      <div class="stat"><div class="lb">Key</div><div class="vl">{{if .ActiveKID}}{{.ActiveKID}}{{else}}<span class="badge err">none</span>{{end}}</div></div>
+    </div>
+  </div>
+  {{end}}
 </div>
 <p class="hint">
   Read API: <code>GET {{if .PublicURL}}{{.PublicURL}}{{end}}/v1/events</code> with the endpoint's
   bearer token. Values are ciphertext; decryption happens on the consumer.
 </p>
 {{else}}
-<div class="card">
-  <p class="hint">No endpoints yet. Create one to start collecting webhooks from a provider.</p>
+<div class="card empty">
+  <p><b>No endpoints yet.</b></p>
+  <p class="hint">Create one to start collecting webhooks from a provider — keys are generated in this browser and the server only ever sees the public half.</p>
+  <a class="button primary" href="/new">Create your first endpoint</a>
 </div>
 {{end}}
+{{end}}
+
+{{define "scripts"}}
+<script>
+  // Copy buttons carry the full value in a data attribute; the label flashes
+  // "copied" so the click is confirmed without any toast apparatus.
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-copy-value]');
+    if (!btn) return;
+    await navigator.clipboard.writeText(btn.dataset.copyValue);
+    const old = btn.textContent;
+    btn.textContent = 'copied';
+    setTimeout(() => { btn.textContent = old; }, 1200);
+  });
+</script>
 {{end}}

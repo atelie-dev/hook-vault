@@ -1,12 +1,13 @@
 {{define "content"}}
+<p class="crumb"><a href="/">← Endpoints</a></p>
 <h1>New endpoint</h1>
 
 <form id="create-form" class="card" autocomplete="off">
-  <label>Name</label>
-  <input name="name" required maxlength="200" placeholder="github prod">
+  <label for="f-name">Name</label>
+  <input id="f-name" name="name" required maxlength="200" placeholder="github prod" autofocus>
 
   <fieldset>
-    <legend>Verification — the provider signature</legend>
+    <legend>Verification — provider signature</legend>
     <label>Profile</label>
     <select name="verify">
       <option value="none">none — accept everything (only for endpoints you control end to end)</option>
@@ -31,18 +32,29 @@
 
   <fieldset>
     <legend>Storage policy</legend>
-    <div class="row">
+    <div class="row grow">
       <div><label>Retention (days, 0 = no limit)</label><input name="retention_days" type="number" min="0" value="30"></div>
-      <div><label>Max stored bytes (0 = no limit)</label><input name="max_bytes" type="number" min="0" value="1073741824"></div>
+      <div>
+        <label for="f-max-bytes">Max stored size (0 = no limit)</label>
+        <div class="size-row">
+          <input id="f-max-bytes" name="max_bytes" type="number" min="0" step="any" value="1">
+          <select name="max_bytes_unit" aria-label="Unit for max stored size">
+            <option value="1">bytes</option>
+            <option value="1024">KiB</option>
+            <option value="1048576">MiB</option>
+            <option value="1073741824" selected>GiB</option>
+          </select>
+        </div>
+      </div>
     </div>
     <p class="hint">When the size cap is reached, the oldest events are evicted — the ingest never rejects a delivery.</p>
   </fieldset>
 
   <fieldset>
     <legend>Recipient key</legend>
-    <div class="row" style="flex-wrap:nowrap">
-      <label style="flex:0 0 auto"><input type="radio" name="key_mode" value="generate" checked> generate in this browser</label>
-      <label style="flex:0 0 auto"><input type="radio" name="key_mode" value="paste"> paste from <code>hook-vault keygen</code></label>
+    <div class="row">
+      <label class="choice"><input type="radio" name="key_mode" value="generate" checked> <span>generate in this browser</span></label>
+      <label class="choice"><input type="radio" name="key_mode" value="paste"> <span>paste from <code>hook-vault keygen</code></span></label>
     </div>
     <div id="paste-fields" class="hidden">
       <label>public_key</label><input name="paste_public_key">
@@ -140,11 +152,15 @@ form.addEventListener('submit', async (event) => {
   hide('create-error');
   const fields = new FormData(form);
 
+  // The size picker stores bytes on the wire: number × unit multiplier
+  // (the unit dropdown is presentation only — the API and DB stay in bytes).
+  const maxSize = Number(fields.get('max_bytes')) || 0;
+  const maxUnit = Number(fields.get('max_bytes_unit')) || 1;
   const body = {
     name: fields.get('name'),
     verify: fields.get('verify'),
     retention_days: Number(fields.get('retention_days')) || undefined,
-    max_bytes: Number(fields.get('max_bytes')) || undefined,
+    max_bytes: maxSize > 0 ? maxSize * maxUnit : undefined,
   };
   if (fields.get('verify') !== 'none') body.verify_secret = fields.get('verify_secret');
   if (fields.get('verify') === 'meta' && fields.get('verify_token')) {
