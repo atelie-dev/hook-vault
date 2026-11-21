@@ -63,6 +63,23 @@ token:        the read API bearer token, derived from the secret (HKDF)
 token_sha256: what the server stores; register this, never the token
 ```
 
+**Run it once per endpoint, not once per installation.** The token is what
+identifies the endpoint — presenting it is how the server knows which archive to
+read — so each endpoint gets its own key pair, its own `kid` and its own token.
+Two consequences worth knowing before you plan:
+
+- **A key pair belongs to exactly one endpoint.** Registering the same
+  `token_sha256` on a second endpoint is refused with `409 token_in_use`, which
+  bounds the blast radius of a leaked token to a single endpoint's history.
+- **One endpoint can have several key pairs.** Run `keygen` again and register
+  the new public key to give a second consumer access, or to rotate: the old key
+  keeps opening the events it sealed, which are tagged with its `kid`.
+
+So three endpoints read by one service means three secrets inside that service,
+and rotation is per endpoint. `keygen --secret <secret>` is not a new key — it
+reprints the values for a secret you already have, which is how you recover
+`token` and `token_sha256` after a restore.
+
 Then create an endpoint through the control plane:
 
 ```bash
@@ -270,7 +287,7 @@ Three details make it correct rather than merely convenient:
 | `GET` | `/v1/endpoints` | |
 | `GET` | `/v1/endpoints/{id}` | endpoint plus its keys |
 | `PATCH` | `/v1/endpoints/{id}` | policy, verification, disable; `0` clears a limit |
-| `POST` | `/v1/endpoints/{id}/keys` | register a rotated public key |
+| `POST` | `/v1/endpoints/{id}/keys` | register a rotated key or a second reader; `409` if the key already belongs to another endpoint |
 | `DELETE` | `/v1/endpoints/{id}/keys/{kid}` | revoke; history stays readable |
 | `GET` | `/v1/endpoints/{id}/stats?window=24h` | hourly buckets |
 

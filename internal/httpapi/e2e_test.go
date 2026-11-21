@@ -501,3 +501,62 @@ func TestRetentionEnforcesAgeAndSize(t *testing.T) {
 		t.Fatalf("age policy left %d events / %d bytes", endpoint.EventsUsed, endpoint.BytesUsed)
 	}
 }
+
+// A key pair is bound to exactly one endpoint: the token is the endpoint's
+// identity, so sharing it would widen the blast radius of a leak. The inverse is
+// allowed — several keys on one endpoint, for rotation or a second reader.
+func TestKeyBelongsToExactlyOneEndpoint(t *testing.T) {
+	_, controlPlane, _ := newHarness(t)
+
+	key, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	first := createEndpoint(t, controlPlane.URL, key, nil)
+
+	registration := map[string]any{
+		"public_key":   vault.EncodePublic(key.Public[:]),
+		"token_sha256": hex.EncodeToString(vault.HashToken(key.Token)),
+	}
+	withName := map[string]any{"name": "second"}
+	for k, v := range registration {
+		withName[k] = v
+	}
+	body, _ := json.Marshal(withName)
+
+	status, respBody, _ := do(t, http.MethodPost, controlPlane.URL+"/v1/endpoints", body,
+		map[string]string{"Content-Type": "application/json"})
+	if status != http.StatusConflict {
+		t.Fatalf("reused key on another endpoint: status %d, want 409 (body %s)", status, respBody)
+	}
+	if !strings.Contains(string(respBody), "token_in_use") {
+		t.Fatalf("expected token_in_use, got %s", respBody)
+	}
+
+	// A second key on the same endpoint is how a rotation or a second consumer
+	// is added, so it must succeed.
+	other, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate second key: %v", err)
+	}
+	rotation, _ := json.Marshal(map[string]any{
+		"public_key":   vault.EncodePublic(other.Public[:]),
+		"token_sha256": hex.EncodeToString(vault.HashToken(other.Token)),
+	})
+	status, respBody, _ = do(t, http.MethodPost,
+		controlPlane.URL+"/v1/endpoints/"+first.Endpoint.ID+"/keys", rotation,
+		map[string]string{"Content-Type": "application/json"})
+	if status != http.StatusCreated {
+		t.Fatalf("second key on the same endpoint: status %d, want 201 (body %s)", status, respBody)
+	}
+
+	// Re-registering the same key on its own endpoint is idempotent, which is
+	// what makes a retried registration safe.
+	reRegister, _ := json.Marshal(registration)
+	status, respBody, _ = do(t, http.MethodPost,
+		controlPlane.URL+"/v1/endpoints/"+first.Endpoint.ID+"/keys", reRegister,
+		map[string]string{"Content-Type": "application/json"})
+	if status != http.StatusCreated {
+		t.Fatalf("idempotent re-registration: status %d, want 201 (body %s)", status, respBody)
+	}
+}
