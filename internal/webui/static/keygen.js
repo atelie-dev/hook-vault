@@ -67,4 +67,17 @@ export async function newPair() {
   return crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveKey', 'deriveBits']);
 }
 
-export const api = { b64url, b64urlDecode, deriveAll, deriveToken, newPair };
+// supported reports whether this browser can generate X25519 keys — some
+// pre-2025 browsers ship WebCrypto without the secure curves, and the form
+// must fall back to the offline keygen instead of failing on submit.
+export async function supported() {
+  try {
+    const pair = await newPair();
+    await crypto.subtle.exportKey('raw', pair.publicKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const api = { b64url, b64urlDecode, deriveAll, deriveToken, newPair, supported };

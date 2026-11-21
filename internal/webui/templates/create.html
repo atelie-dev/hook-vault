@@ -82,6 +82,7 @@
 <script type="module">
 import { api } from '/static/keygen.js';
 
+const form = document.getElementById('create-form');
 const hex = (bytes) => Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
 const show = (id) => document.getElementById(id).classList.remove('hidden');
 const hide = (id) => document.getElementById(id).classList.add('hidden');
@@ -115,7 +116,23 @@ const toggleTokenRow = () =>
 profile.addEventListener('change', toggleTokenRow);
 toggleTokenRow();
 
-const form = document.getElementById('create-form');
+// A browser without X25519 would fail on submit with no visible error, so the
+// form switches to the paste path and says so.
+if (!(await api.supported())) {
+  document.querySelector('input[name="key_mode"][value="paste"]').checked = true;
+  const generate = document.querySelector('input[name="key_mode"][value="generate"]');
+  generate.disabled = true;
+  const note = document.getElementById('generate-fields');
+  note.classList.remove('hint');
+  note.classList.add('notice');
+  note.textContent =
+    'Este navegador não suporta geração de chaves no WebCrypto (X25519). ' +
+    'Gere offline com `hook-vault keygen` e cole public_key + token_sha256 aqui.';
+  const paste = document.getElementById('paste-fields');
+  paste.classList.remove('hidden');
+  toggleTokenRow();
+}
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   const error = document.getElementById('create-error');
