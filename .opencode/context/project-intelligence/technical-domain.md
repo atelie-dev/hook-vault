@@ -150,12 +150,12 @@ profiles, `since`, watch). Go has a lint gate (`golangci-lint run ./...`); JS ha
 
 - **No user accounts** in the panel, ever (AGENTS invariant 7).
 - **No endpoint delete in the API.** Only `disabled`; a real delete (refusing
-  endpoints that hold events) is planned, and today it is done with SQL, which
-  is not a supported path.
+  endpoints holding events) is planned, today it is SQL, not a supported path.
 - **No retries, fan-out or transformations.** Append-only log; push delivery
   belongs in front (Svix, Hookdeck Outpost).
-- **Read API sits on the data plane**, so it is public. Agreed to gate `/v1/*`
-  to the tailnet at Caddy (only `/in/*` must be public) — planned, not done.
+- **Read API sits on the data plane**, so public; gate `/v1/*` to the tailnet at Caddy (only `/in/*` must be public) — planned, not done.
+- **No `LISTEN`/`NOTIFY` for the stream**: in-process wake plus a 1s tick; a
+  stalled notify queue could fail an ingest. See `docs/adr/0001-wake-signal.md`.
 - **`--since` is not a compatibility shim**: CLI and server share a version; the CLI validates locally and never filters.
 
 ## Known gaps, in the order they probably matter

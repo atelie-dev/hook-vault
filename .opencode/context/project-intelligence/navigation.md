@@ -1,4 +1,4 @@
-<!-- Context: project-intelligence/navigation | Priority: critical | Version: 1.2 | Updated: 2026-11-21 -->
+<!-- Context: project-intelligence/navigation | Priority: critical | Version: 1.3 | Updated: 2026-11-21 -->
 
 # Project Intelligence — hook-vault
 
@@ -28,6 +28,7 @@
 | `internal/webui/templates/*.html` | Panel UI — `create.html` carries the keygen flow and the profile→verify-token coupling |
 | `migrations/0001_init.sql` | Schema, constraints and the reasoning comments |
 | `internal/timespec/timespec.go` | The `since` grammar shared by the CLI and the read API |
+| `docs/adr/` | Decisions with their rejected alternatives — currently the stream's wake signal and why not `LISTEN`/`NOTIFY` |
 
 **Deployment lives in another repo**: `atelie-server` → `modules/hook-vault.nix`
 (systemd unit, LoadCredential, Caddy vhosts), `infra/cloudflare-token/` (the
