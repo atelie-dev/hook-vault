@@ -146,6 +146,19 @@ hook-vault fetch --url https://hooks.example.com --key-file ~/.hookvault.key \
 sets the idle poll (default 5s). A rejected token ends the loop, a network blip
 only logs and retries, and Ctrl-C exits with the cursor already saved.
 
+By default `--watch` starts at the **tail**. To replay everything still stored
+and then keep following, add `--from-start`:
+
+```bash
+hook-vault fetch --url https://hooks.example.com --key-file ~/.hookvault.key \
+  --watch --from-start --format jsonl
+```
+
+`--from-start` means "ignore cursors": it refuses to combine with `--cursor` or
+`--cursor-file`, so a restarted pipeline cannot silently replay history it had
+already processed. If what you want is the backlog *once*, run without `--watch`
+(the one-shot read already begins at the oldest stored event).
+
 ### Flags that matter
 
 | Flag | Env | Effect |
@@ -159,6 +172,7 @@ only logs and retries, and Ctrl-C exits with the cursor already saved.
 | `--format` | | `auto` (default), `human`, `jsonl` |
 | `--raw-payload` | | never interpret the payload: always a string, never embedded JSON |
 | `--watch` / `--interval` | | page forever; idle poll interval |
+| `--from-start` | | with `--watch`, begin at the oldest stored event instead of the tail |
 | `--include-rejected` | | also list events that failed signature verification |
 
 A flag always wins over the environment; setting both sources at the same level

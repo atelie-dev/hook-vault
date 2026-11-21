@@ -98,6 +98,7 @@ func runFetch(args []string) error {
 		includeReject = fs.Bool("include-rejected", false, "also return events that failed signature verification")
 		format        = fs.String("format", "auto", "output: auto (human on a terminal, jsonl otherwise), human, jsonl")
 		watch         = fs.Bool("watch", false, "keep paging and emit events as they arrive")
+		fromStart     = fs.Bool("from-start", false, "with --watch, begin at the oldest stored event instead of the tail")
 		interval      = fs.Duration("interval", 5*time.Second, "poll interval when --watch has nothing new")
 		rawPayload    = fs.Bool("raw-payload", false, "never interpret the payload, even when the content-type is JSON")
 	)
@@ -132,6 +133,9 @@ func runFetch(args []string) error {
 	}
 	if opts.interval <= 0 {
 		return errors.New("--interval must be positive")
+	}
+	if *fromStart && (*cursor != "" || *cursorFile != "") {
+		return errors.New("--from-start begins at the oldest stored event; drop --cursor/--cursor-file")
 	}
 
 	// Output format: a person at a terminal gets colours, a pipe gets jsonl.
@@ -225,9 +229,9 @@ func runFetch(args []string) error {
 		return runOnce(ctx, client, opts)
 	}
 
-	// Watching without a starting point should attach at the tail, not replay
-	// the whole retention window.
-	if opts.cursor == "" {
+	// Watching without a starting point attaches at the tail, not the whole
+	// retention window — unless --from-start asked for exactly that.
+	if opts.watch && !*fromStart && opts.cursor == "" {
 		if newest, err := fetchNewest(ctx, client, opts); err == nil && newest != nil {
 			opts.cursor = *newest
 		}
