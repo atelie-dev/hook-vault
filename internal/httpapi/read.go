@@ -210,13 +210,16 @@ func validUUID(s string) bool {
 				return false
 			}
 		default:
-			c := s[i]
-			if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+			if !isHex(s[i]) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
 }
 
 func (s *Server) ingestURL(slug string) string {

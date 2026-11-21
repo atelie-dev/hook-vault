@@ -156,8 +156,10 @@ func HashEqual(a, b []byte) bool {
 	return subtle.ConstantTimeCompare(a, b) == 1
 }
 
-// EncodeSecret and EncodePublic render keys for humans and config files.
+// EncodeSecret renders the secret key for humans and config files.
 func EncodeSecret(secret []byte) string { return base64.RawURLEncoding.EncodeToString(secret) }
+
+// EncodePublic renders the public key for humans and config files.
 func EncodePublic(public []byte) string { return base64.RawURLEncoding.EncodeToString(public) }
 
 // ParsePublicKey accepts a base64-encoded 32-byte X25519 public key, with or

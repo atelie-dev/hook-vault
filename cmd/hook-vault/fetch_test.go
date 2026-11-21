@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -90,7 +91,7 @@ func TestFetchPageAndDecrypt(t *testing.T) {
 }
 
 func TestFetchPageRejectsBadToken(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"code":"unauthorized"}`))
 	}))
@@ -99,7 +100,7 @@ func TestFetchPageRejectsBadToken(t *testing.T) {
 	opts := &fetchOptions{baseURL: server.URL, token: "hv1_nope", limit: 10}
 	if _, err := fetchPage(context.Background(), server.Client(), opts); err == nil {
 		t.Fatal("a 401 must be an error")
-	} else if err != errUnauthorized {
+	} else if !errors.Is(err, errUnauthorized) {
 		t.Fatalf("error = %v, want errUnauthorized", err)
 	}
 }

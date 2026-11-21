@@ -131,7 +131,7 @@ func humanBytes(n int64) string {
 
 // render builds a fresh template set per page: every template file defines its
 // own "content" (and optionally "scripts"), the layout consumes them.
-func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page string, data any) {
+func (s *Server) render(w http.ResponseWriter, _ *http.Request, status int, page string, data any) {
 	t := template.New("layout.html").Funcs(templateFuncs)
 	if _, err := t.ParseFS(webui.FS, "templates/layout.html", "templates/"+page); err != nil {
 		s.logger.Error("parse panel template", "page", page, "error", err)

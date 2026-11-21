@@ -17,7 +17,7 @@
             pname = "hook-vault";
             inherit version;
             src = ./.;
-            vendorHash = "sha256-M2q/HbFXzXGItFeb/SmONr0PT+3jsDbC7HzYpFQhrDs=";
+            vendorHash = "sha256-jHD8eMt/D6T5D1BX2WG9EF+pnC50lhXrXPe5PY1f9CQ=";
             env.CGO_ENABLED = "0";
             ldflags = [ "-s" "-w" "-X" "main.version=${version}" ];
             meta = {

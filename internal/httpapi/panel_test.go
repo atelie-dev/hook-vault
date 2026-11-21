@@ -57,7 +57,7 @@ func newPanelHarness(t *testing.T, adminToken string) *httptest.Server {
 // get stops at the first response: the panel redirects unauthenticated pages to
 // /login, and following that redirect would hide what the server actually did.
 var panelClient = &http.Client{
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	},
 }

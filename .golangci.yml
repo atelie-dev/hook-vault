@@ -1,0 +1,37 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - misspell
+    - nolintlint
+    - revive
+    - unconvert
+    - whitespace
+  exclusions:
+    presets:
+      - std-error-handling
+      - common-false-positives
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unparam
+  settings:
+    errcheck:
+      # bufio.Writer latches write errors and reports them from Flush, which
+      # renderEvent returns; checking each Write would be redundant.
+      exclude-functions:
+        - (*bufio.Writer).Write
+        - (*bufio.Writer).WriteString
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

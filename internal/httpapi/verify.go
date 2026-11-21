@@ -175,9 +175,9 @@ func probeJSON(body []byte) jsonProbe {
 	return probe
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
+func truncate(s string, limit int) string {
+	if len(s) <= limit {
 		return s
 	}
-	return s[:max]
+	return s[:limit]
 }

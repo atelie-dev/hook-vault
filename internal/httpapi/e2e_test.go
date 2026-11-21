@@ -53,7 +53,7 @@ func newHarness(t *testing.T) (*httptest.Server, *httptest.Server, *store.Store)
 		t.Fatalf("migrate: %v", err)
 	}
 
-	logOut := io.Writer(io.Discard)
+	logOut := io.Discard
 	if os.Getenv("HOOKVAULT_TEST_VERBOSE") != "" {
 		logOut = os.Stderr
 	}
