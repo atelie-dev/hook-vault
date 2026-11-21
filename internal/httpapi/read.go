@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/atelie-dev/hook-vault/internal/store"
+	"github.com/atelie-dev/hook-vault/internal/timespec"
 	"github.com/atelie-dev/hook-vault/internal/vault"
 )
 
@@ -64,11 +65,22 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		cursor = &raw
 	}
 
+	var since *time.Time
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		parsed, err := timespec.Parse(raw, time.Now())
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_since", err.Error())
+			return
+		}
+		since = &parsed
+	}
+
 	includeRejected := r.URL.Query().Get("include_rejected") == "true"
 
 	events, hasMore, err := s.store.FetchEvents(r.Context(), store.FetchParams{
 		EndpointID:      endpoint.ID,
 		Cursor:          cursor,
+		Since:           since,
 		Limit:           limit,
 		Lag:             s.readLag,
 		IncludeRejected: includeRejected,

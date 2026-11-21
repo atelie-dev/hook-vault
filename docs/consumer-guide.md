@@ -159,6 +159,26 @@ hook-vault fetch --url https://hooks.example.com --key-file ~/.hookvault.key \
 already processed. If what you want is the backlog *once*, run without `--watch`
 (the one-shot read already begins at the oldest stored event).
 
+### A time window instead of the whole log
+
+`--since` takes a duration, the kubectl word forms, or an absolute timestamp:
+
+```bash
+hook-vault fetch … --since=10m            # the last ten minutes
+hook-vault fetch … --since=2hours         # 1h30m and 2days work too
+hook-vault fetch … --since=2026-11-21T08:00:00Z
+hook-vault fetch … --since=0              # everything still stored
+```
+
+The window is resolved by the server, against the same clock that stamped
+`received_at` — so "the last ten minutes" does not drift with your laptop's
+clock. The CLI also keeps a local cutoff, which makes it behave correctly even
+against a server that predates the parameter (it just pages further).
+
+`--since` composes with `--watch` (start inside the window, then follow) and is
+mutually exclusive with `--cursor`, `--cursor-file` and `--from-start`: only one
+of them can define where to begin.
+
 ### Flags that matter
 
 | Flag | Env | Effect |
@@ -173,6 +193,7 @@ already processed. If what you want is the backlog *once*, run without `--watch`
 | `--raw-payload` | | never interpret the payload: always a string, never embedded JSON |
 | `--watch` / `--interval` | | page forever; idle poll interval |
 | `--from-start` | | with `--watch`, begin at the oldest stored event instead of the tail |
+| `--since` | | time window: `10m`, `2hours`, RFC3339, or `0` for everything |
 | `--include-rejected` | | also list events that failed signature verification |
 
 A flag always wins over the environment; setting both sources at the same level

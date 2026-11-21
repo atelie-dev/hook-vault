@@ -461,6 +461,7 @@ func (s *Store) InsertEvent(ctx context.Context, p InsertEventParams) (string, e
 type FetchParams struct {
 	EndpointID      string
 	Cursor          *string
+	Since           *time.Time
 	Limit           int
 	Lag             time.Duration
 	IncludeRejected bool
@@ -479,9 +480,10 @@ func (s *Store) FetchEvents(ctx context.Context, p FetchParams) ([]Event, bool, 
 		   and received_at < now() - make_interval(secs => $2)
 		   and ($3::text is null or id > $3::uuid)
 		   and ($4::boolean or status = 'stored')
+		   and ($5::timestamptz is null or received_at >= $5)
 		 order by id
-		 limit $5`,
-		p.EndpointID, p.Lag.Seconds(), p.Cursor, p.IncludeRejected, p.Limit+1)
+		 limit $6`,
+		p.EndpointID, p.Lag.Seconds(), p.Cursor, p.IncludeRejected, p.Since, p.Limit+1)
 	if err != nil {
 		return nil, false, fmt.Errorf("fetch events: %w", err)
 	}

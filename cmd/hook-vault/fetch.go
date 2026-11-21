@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atelie-dev/hook-vault/internal/timespec"
 	"github.com/atelie-dev/hook-vault/internal/vault"
 )
 
@@ -40,6 +41,8 @@ type fetchOptions struct {
 	includeRejected bool
 	watch           bool
 	interval        time.Duration
+	sinceParam      string
+	sinceCutoff     *time.Time
 	rawPayload      bool
 	format          string // human | jsonl
 	color           bool
@@ -99,6 +102,7 @@ func runFetch(args []string) error {
 		format        = fs.String("format", "auto", "output: auto (human on a terminal, jsonl otherwise), human, jsonl")
 		watch         = fs.Bool("watch", false, "keep paging and emit events as they arrive")
 		fromStart     = fs.Bool("from-start", false, "with --watch, begin at the oldest stored event instead of the tail")
+		since         = fs.String("since", "", "start from a time window: 10m, 2h, 10min, 2days, or an RFC3339 timestamp (0 = everything)")
 		interval      = fs.Duration("interval", 5*time.Second, "poll interval when --watch has nothing new")
 		rawPayload    = fs.Bool("raw-payload", false, "never interpret the payload, even when the content-type is JSON")
 	)
@@ -136,6 +140,27 @@ func runFetch(args []string) error {
 	}
 	if *fromStart && (*cursor != "" || *cursorFile != "") {
 		return errors.New("--from-start begins at the oldest stored event; drop --cursor/--cursor-file")
+	}
+	if *since != "" {
+		if *cursor != "" || *cursorFile != "" {
+			return errors.New("--since and --cursor/--cursor-file are mutually exclusive")
+		}
+		if *fromStart {
+			return errors.New("--since and --from-start both define where to begin; pick one")
+		}
+	}
+
+	// --since accepts a window (resolved server-side, against the clock that
+	// stamped received_at) or an absolute instant. The local cutoff is a safety
+	// net: an older server ignores the unknown query parameter, and dropping
+	// stale events here keeps the output correct even then.
+	opts.sinceParam = *since
+	if *since != "" && *since != "0" {
+		cutoff, err := timespec.Parse(*since, time.Now())
+		if err != nil {
+			return err
+		}
+		opts.sinceCutoff = &cutoff
 	}
 
 	// Output format: a person at a terminal gets colours, a pipe gets jsonl.
@@ -230,8 +255,8 @@ func runFetch(args []string) error {
 	}
 
 	// Watching without a starting point attaches at the tail, not the whole
-	// retention window — unless --from-start asked for exactly that.
-	if opts.watch && !*fromStart && opts.cursor == "" {
+	// retention window — unless --from-start or --from asked for otherwise.
+	if opts.watch && !*fromStart && opts.sinceParam == "" && opts.cursor == "" {
 		if newest, err := fetchNewest(ctx, client, opts); err == nil && newest != nil {
 			opts.cursor = *newest
 		}
@@ -295,6 +320,10 @@ func watchLoop(ctx context.Context, client *http.Client, opts *fetchOptions) err
 func emitAll(opts *fetchOptions, page *remotePage) (int, error) {
 	count := 0
 	for _, event := range page.Events {
+		// Safety net for a server that ignores `since`: keep the window exact.
+		if opts.sinceCutoff != nil && event.ReceivedAt.Before(*opts.sinceCutoff) {
+			continue
+		}
 		if err := emit(opts, event); err != nil {
 			return count, err
 		}
@@ -327,6 +356,9 @@ func fetchPage(ctx context.Context, client *http.Client, opts *fetchOptions) (*r
 	}
 	if opts.includeRejected {
 		query.Set("include_rejected", "true")
+	}
+	if opts.sinceParam != "" && opts.sinceParam != "0" {
+		query.Set("since", opts.sinceParam)
 	}
 
 	var page remotePage

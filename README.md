@@ -308,7 +308,7 @@ before decoding; Node, Go and PHP do not.
 |---|---|---|
 | `POST` | `/in/{slug}` | the provider endpoint; `X-HookVault-Event-Id` in the response |
 | `GET` | `/in/{slug}?hub.mode=subscribe&hub.verify_token=…&hub.challenge=…` | Meta subscription handshake, echoes the challenge |
-| `GET` | `/v1/events?cursor=&limit=&include_rejected=` | bearer token; `limit` ≤ 1000, default 100 |
+| `GET` | `/v1/events?cursor=&limit=&since=&include_rejected=` | bearer token; `limit` ≤ 1000, default 100; `since` is a duration (`10m`, `2hours`) or RFC3339, resolved against the database clock |
 | `GET` | `/v1/me` | key id, storage counters, both ends of the log (`cursor.oldest`, `cursor.newest`) |
 
 `GET /v1/events` returns:

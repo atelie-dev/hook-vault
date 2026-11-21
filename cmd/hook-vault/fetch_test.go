@@ -410,6 +410,45 @@ func TestWatchLoopAdvancesCursorWithoutFile(t *testing.T) {
 	}
 }
 
+// A server that ignores the unknown `since` parameter must not change the
+// result: the client-side cutoff keeps the window exact.
+func TestEmitAllAppliesLocalSinceCutoff(t *testing.T) {
+	key, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	cutoff := time.Date(2026, 11, 21, 11, 0, 0, 0, time.UTC)
+	page := &remotePage{Events: []remoteEvent{
+		{
+			ID:         "019a0000-0000-7000-8000-000000000001",
+			ReceivedAt: cutoff.Add(-time.Minute), // outside
+			KID:        key.KID,
+			CT:         sealFor(t, key, "old"),
+			Status:     "stored",
+		},
+		{
+			ID:         "019a0000-0000-7000-8000-000000000002",
+			ReceivedAt: cutoff.Add(time.Minute), // inside
+			KID:        key.KID,
+			CT:         sealFor(t, key, "new"),
+			Status:     "stored",
+		},
+	}}
+
+	out := &lockedBuf{}
+	opts := &fetchOptions{key: key, format: "jsonl", sinceCutoff: &cutoff, out: out, errOut: out}
+	count, err := emitAll(opts, page)
+	if err != nil {
+		t.Fatalf("emitAll: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("emitted %d events, want 1", count)
+	}
+	if !strings.Contains(out.String(), `"new"`) || strings.Contains(out.String(), `"old"`) {
+		t.Fatalf("wrong event survived the cutoff:\n%s", out.String())
+	}
+}
+
 func TestPickCredential(t *testing.T) {
 	cases := []struct {
 		name                   string
