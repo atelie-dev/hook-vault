@@ -82,3 +82,15 @@ migrations/           embedded SQL, applied by `serve` and `migrate`
 New file in `migrations/`, numeric prefix, applied in lexical order and each in
 its own transaction. Never edit an applied migration: existing installs will not
 re-run it.
+
+## When changing dependencies
+
+`vendorHash` in `flake.nix` hashes the module set, so any `go.mod` / `go.sum`
+change invalidates it. `nix build` then fails with **"inconsistent vendoring"**
+(the old fixed-output derivation is still in the cache), not with the hash
+mismatch that names the fix: set `vendorHash = nixpkgs.lib.fakeHash`, build,
+copy the reported `got:` value back, and rebuild.
+
+The `go` line in `go.mod` is a floor, not a version pin: `atelie-server`
+consumes this flake with `inputs.nixpkgs.follows` and builds with its own
+nixpkgs, so never raise it past the Go that pin ships (1.26.10 as of nixos-26.05).
