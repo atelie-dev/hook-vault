@@ -10,8 +10,9 @@
     <label>Profile</label>
     <select name="verify">
       <option value="none">none — accept everything (only for endpoints you control end to end)</option>
-      <option value="github" selected>github / meta — X-Hub-Signature-256</option>
-      <option value="stripe">stripe — Stripe-Signature</option>
+      <option value="github">github — X-Hub-Signature-256 + GitHub event headers</option>
+      <option value="meta">meta (Facebook / WhatsApp / Instagram) — X-Hub-Signature-256 + hub.challenge handshake</option>
+      <option value="stripe">stripe — Stripe-Signature (timestamped)</option>
       <option value="generic-hmac">generic-hmac — X-HookVault-Signature</option>
     </select>
     <label>Provider secret</label>

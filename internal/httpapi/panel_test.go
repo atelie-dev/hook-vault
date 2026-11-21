@@ -245,3 +245,20 @@ func TestPanelCreatePostsToExistingAPI(t *testing.T) {
 		t.Fatalf("incomplete response: %+v", created)
 	}
 }
+
+// Every profile the server accepts must be selectable in the form. A profile
+// missing from the select is a capability the UI silently hides — the meta
+// profile was missing, so its verify-token field could never appear.
+func TestPanelOffersEveryVerifyProfile(t *testing.T) {
+	control := newPanelHarness(t, "")
+
+	status, body, _ := do(t, http.MethodGet, control.URL+"/new", nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("create page: status %d", status)
+	}
+	for _, profile := range []string{"none", "github", "meta", "stripe", "generic-hmac"} {
+		if !strings.Contains(string(body), `value="`+profile+`"`) {
+			t.Errorf("form does not offer verify profile %q", profile)
+		}
+	}
+}
