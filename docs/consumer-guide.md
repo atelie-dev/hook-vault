@@ -120,13 +120,16 @@ hook-vault fetch --url https://hooks.example.com --key-file ~/.hookvault.key
 ```
 
 ```json
-{"id":"01a1fd3c-…","received_at":"…","kid":"kzr7kmv5imf","status":"stored","meta":{"source":"meta"},"decrypted":true,"payload":"{\"object\":\"whatsapp_business_account\"}"}
+{"id":"01a1fd3c-…","received_at":"…","kid":"kzr7kmv5imf","status":"stored","meta":{"source":"meta","content_type":"application/json"},"decrypted":true,"payload":{"object":"whatsapp_business_account","entry":[{"id":"1"}]}}
 ```
 
-The jsonl schema is stable on purpose: `decrypted` is always present, `payload`
-is always a string (parse it however you like), and an event you cannot open
-carries `ct` plus `reason` instead. Nothing about the shape depends on which
-credential you used.
+The jsonl schema is stable on purpose: `decrypted` is always present, and an
+event you cannot open carries `ct` plus `reason`. `payload` is **data when the
+producer said so** — embedded JSON when the content-type is JSON and the body
+parses, otherwise a JSON string. `--raw-payload` turns that off and always emits
+the string, which is what a pipeline that hashes or re-seals bodies wants. The
+embedded case is compacted, so the one-line-per-event invariant holds even when
+the producer sent pretty-printed JSON.
 
 ### Watch mode
 
@@ -152,6 +155,7 @@ only logs and retries, and Ctrl-C exits with the cursor already saved.
 | `--cursor-file` | read and write a cursor file, so repeated runs resume |
 | `--cursor` | start after a specific event id |
 | `--format` | `auto` (default), `human`, `jsonl` |
+| `--raw-payload` | never interpret the payload: always a string, never embedded JSON |
 | `--watch` / `--interval` | page forever; idle poll interval |
 | `--include-rejected` | also list events that failed signature verification |
 

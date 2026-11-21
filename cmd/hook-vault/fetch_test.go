@@ -131,11 +131,11 @@ func TestEmitJSONLHasStableSchema(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[0]), &decoded); err != nil {
 		t.Fatalf("not json: %v", err)
 	}
+	// No content-type in meta: the payload stays a string.
 	if decoded["decrypted"] != true || decoded["payload"] != "raw body, not json" {
 		t.Fatalf("schema = %v", decoded)
 	}
 
-	// Without a key the same schema holds, with ct and a reason instead.
 	buf.Reset()
 	opts.key = nil
 	if err := emit(opts, event); err != nil {
@@ -149,17 +149,66 @@ func TestEmitJSONLHasStableSchema(t *testing.T) {
 	}
 }
 
+// A JSON content-type means the payload is data, not a string — unless
+// --raw-payload says otherwise. One line per event still holds.
+func TestEmitJSONLInterpretsJSONPayload(t *testing.T) {
+	key, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	event := remoteEvent{
+		ID:     "019a0000-0000-7000-8000-000000000002",
+		KID:    key.KID,
+		CT:     sealFor(t, key, "{\n  \"entry\": [{\"id\": \"1\"}],\n  \"object\": \"whatsapp\"\n}"),
+		Status: "stored",
+		Meta:   json.RawMessage(`{"source":"meta","content_type":"application/json; charset=utf-8"}`),
+	}
+
+	var buf bytes.Buffer
+	opts := &fetchOptions{key: key, format: "jsonl", out: &buf, errOut: &buf}
+	if err := emit(opts, event); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if lines := strings.Split(strings.TrimSpace(buf.String()), "\n"); len(lines) != 1 {
+		t.Fatalf("embedded payload broke the one-line invariant: %d lines", len(lines))
+	}
+
+	var decoded struct {
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	if decoded.Payload["object"] != "whatsapp" {
+		t.Fatalf("payload not embedded: %s", buf.String())
+	}
+
+	// --raw-payload turns it back into a string.
+	buf.Reset()
+	opts.rawPayload = true
+	if err := emit(opts, event); err != nil {
+		t.Fatalf("emit raw: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	if _, isString := raw["payload"].(string); !isString {
+		t.Fatalf("--raw-payload must keep the payload a string: %v", raw["payload"])
+	}
+}
+
 func TestEmitHumanPrettyPrintsJSON(t *testing.T) {
 	key, err := vault.Generate()
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 	event := remoteEvent{
-		ID:     "019a0000-0000-7000-8000-000000000001",
+		ID:     "019a0000-0000-7000-8000-000000000003",
 		KID:    key.KID,
 		CT:     sealFor(t, key, `{"a":1,"b":[2,3]}`),
 		Status: "stored",
-		Meta:   json.RawMessage(`{"source":"meta"}`),
+		Meta:   json.RawMessage(`{"source":"meta","content_type":"application/json"}`),
 	}
 
 	var buf bytes.Buffer
@@ -175,6 +224,16 @@ func TestEmitHumanPrettyPrintsJSON(t *testing.T) {
 	}
 	if strings.Contains(out, "\x1b[") {
 		t.Fatal("colour codes leaked into a non-tty buffer")
+	}
+
+	// --raw-payload shows the bytes as they arrived.
+	buf.Reset()
+	opts.rawPayload = true
+	if err := emit(opts, event); err != nil {
+		t.Fatalf("emit raw: %v", err)
+	}
+	if !strings.Contains(buf.String(), `{"a":1,"b":[2,3]}`) {
+		t.Fatalf("--raw-payload must not reformat:\n%s", buf.String())
 	}
 }
 

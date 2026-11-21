@@ -40,6 +40,7 @@ type fetchOptions struct {
 	includeRejected bool
 	watch           bool
 	interval        time.Duration
+	rawPayload      bool
 	format          string // human | jsonl
 	color           bool
 	out             io.Writer
@@ -74,7 +75,9 @@ type jsonEvent struct {
 	Status     string          `json:"status"`
 	Meta       json.RawMessage `json:"meta,omitempty"`
 	Decrypted  bool            `json:"decrypted"`
-	Payload    *string         `json:"payload,omitempty"`
+	// Payload is embedded as JSON when the content-type says so and the body
+	// parses; otherwise it is a JSON string. --raw-payload forces the string.
+	Payload    json.RawMessage `json:"payload,omitempty"`
 	Ciphertext *string         `json:"ct,omitempty"`
 	Reason     *string         `json:"reason,omitempty"`
 }
@@ -96,6 +99,7 @@ func runFetch(args []string) error {
 		format        = fs.String("format", "auto", "output: auto (human on a terminal, jsonl otherwise), human, jsonl")
 		watch         = fs.Bool("watch", false, "keep paging and emit events as they arrive")
 		interval      = fs.Duration("interval", 5*time.Second, "poll interval when --watch has nothing new")
+		rawPayload    = fs.Bool("raw-payload", false, "never interpret the payload, even when the content-type is JSON")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -112,6 +116,7 @@ func runFetch(args []string) error {
 		includeRejected: *includeReject,
 		watch:           *watch,
 		interval:        *interval,
+		rawPayload:      *rawPayload,
 		out:             os.Stdout,
 		errOut:          os.Stderr,
 	}
@@ -369,8 +374,7 @@ func emit(opts *fetchOptions, event remoteEvent) error {
 			Decrypted:  decrypted,
 		}
 		if decrypted {
-			text := string(payload)
-			line.Payload = &text
+			line.Payload = payloadForJSON(opts, event, payload)
 		} else {
 			line.Ciphertext = &event.CT
 			line.Reason = &reason
@@ -407,7 +411,7 @@ func emitHuman(opts *fetchOptions, event remoteEvent, payload []byte, decrypted 
 	}
 
 	switch {
-	case decrypted && isJSON(payload):
+	case decrypted && interpretPayload(opts, event, payload):
 		pretty := &bytes.Buffer{}
 		if err := json.Indent(pretty, payload, "  ", "  "); err == nil {
 			// json.Indent only prefixes continuation lines; align the opening
@@ -441,9 +445,37 @@ func paint(opts *fetchOptions, code, text string) string {
 	return code + text + "\x1b[0m"
 }
 
-func isJSON(payload []byte) bool {
-	var probe any
-	return json.Unmarshal(payload, &probe) == nil
+// interpretPayload decides whether the body is treated as data or as text: only
+// when the producer declared JSON, the body parses, and --raw-payload is off.
+func interpretPayload(opts *fetchOptions, event remoteEvent, payload []byte) bool {
+	if opts.rawPayload || !jsonContentType(event.Meta) {
+		return false
+	}
+	return json.Valid(payload)
+}
+
+func jsonContentType(meta json.RawMessage) bool {
+	var probe struct {
+		ContentType string `json:"content_type"`
+	}
+	if err := json.Unmarshal(meta, &probe); err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(probe.ContentType), "json")
+}
+
+// payloadForJSON embeds the payload as JSON, compacted so the jsonl invariant
+// (one line per event) holds even when the producer sent pretty-printed JSON.
+// Anything else is written as a JSON string.
+func payloadForJSON(opts *fetchOptions, event remoteEvent, payload []byte) json.RawMessage {
+	if interpretPayload(opts, event, payload) {
+		compact := &bytes.Buffer{}
+		if err := json.Compact(compact, payload); err == nil {
+			return json.RawMessage(compact.Bytes())
+		}
+	}
+	encoded, _ := json.Marshal(string(payload))
+	return encoded
 }
 
 // decodeEvent opens the sealed box when the key is the one that sealed it.
