@@ -54,24 +54,30 @@ func newPanelHarness(t *testing.T, adminToken string) *httptest.Server {
 	return control
 }
 
-// noRedirect stops at the first response: the panel redirects after login and
-// logout, and following them would drop the Set-Cookie (no cookie jar here).
-var noRedirect = &http.Client{
+// get stops at the first response: the panel redirects unauthenticated pages to
+// /login, and following that redirect would hide what the server actually did.
+var panelClient = &http.Client{
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	},
 }
 
-func postForm(t *testing.T, url, body string) (int, string, http.Header) {
+func request(t *testing.T, client *http.Client, method, url, cookie, body string) (int, string, http.Header) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := noRedirect.Do(req)
+	if body != "" {
+		req.Body = io.NopCloser(strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("request %s: %v", url, err)
+		t.Fatalf("%s %s: %v", method, url, err)
 	}
 	defer resp.Body.Close()
 	payload, err := io.ReadAll(resp.Body)
@@ -84,105 +90,102 @@ func postForm(t *testing.T, url, body string) (int, string, http.Header) {
 func TestPanelHealthzAndStaticNeedNoCredential(t *testing.T) {
 	control := newPanelHarness(t, "topsecret")
 
-	status, body, _ := do(t, http.MethodGet, control.URL+"/healthz", nil, nil)
+	status, body, _ := request(t, panelClient, http.MethodGet, control.URL+"/healthz", "", "")
 	if status != http.StatusOK {
 		t.Fatalf("/healthz: status %d, body %s", status, body)
 	}
 
-	status, body, _ = do(t, http.MethodGet, control.URL+"/static/keygen.js", nil, nil)
+	status, body, _ = request(t, panelClient, http.MethodGet, control.URL+"/static/keygen.js", "", "")
 	if status != http.StatusOK {
 		t.Fatalf("/static/keygen.js: status %d, body %s", status, body)
 	}
-	if !strings.Contains(string(body), "hook-vault.auth.v1") {
+	if !strings.Contains(body, "hook-vault.auth.v1") {
 		t.Fatal("keygen.js lost the HKDF info string")
 	}
 }
 
 func TestPanelLoginIssuesCookie(t *testing.T) {
 	control := newPanelHarness(t, "topsecret")
+	const cookieName = "hookvault_admin="
 
-	// The login page is public; everything else is not.
-	status, body, _ := do(t, http.MethodGet, control.URL+"/login", nil, nil)
-	if status != http.StatusOK || !strings.Contains(string(body), "Admin token") {
+	// The login page is public; the dashboard is not.
+	status, body, _ := request(t, panelClient, http.MethodGet, control.URL+"/login", "", "")
+	if status != http.StatusOK || !strings.Contains(body, "Admin token") {
 		t.Fatalf("login page: status %d, body %s", status, body)
 	}
-	status, body, _ = do(t, http.MethodGet, control.URL+"/", nil, nil)
-	if status != http.StatusUnauthorized {
-		t.Fatalf("list without login: status %d, body %s", status, body)
+	status, body, headers := request(t, panelClient, http.MethodGet, control.URL+"/", "", "")
+	if status != http.StatusSeeOther || headers.Get("Location") != "/login" {
+		t.Fatalf("dashboard without session: status %d, location %q (body %s)", status, headers.Get("Location"), body)
 	}
 
-	// Wrong token: 401 and no cookie.
-	status, page, headers := postForm(t, control.URL+"/login", "token=wrong")
+	// Wrong token: 401, no cookie, and the form comes back with the error.
+	status, body, headers = request(t, panelClient, http.MethodPost, control.URL+"/login", "", "token=wrong")
 	if status != http.StatusUnauthorized {
-		t.Fatalf("wrong token: status %d, body %s", status, page)
+		t.Fatalf("wrong token: status %d, body %s", status, body)
 	}
 	if len(headers.Values("Set-Cookie")) != 0 {
 		t.Fatal("a failed login must not set a cookie")
 	}
+	if !strings.Contains(body, "did not match") {
+		t.Fatal("a failed login must return the form, not a JSON error")
+	}
 
-	// Right token: redirect + cookie.
-	status, page, headers = postForm(t, control.URL+"/login", "token=topsecret")
+	// Right token: redirect + stateless cookie.
+	status, body, headers = request(t, panelClient, http.MethodPost, control.URL+"/login", "", "token=topsecret")
 	if status != http.StatusSeeOther {
-		t.Fatalf("login: status %d, body %s", status, page)
+		t.Fatalf("login: status %d, body %s", status, body)
 	}
 	cookies := headers.Values("Set-Cookie")
-	if len(cookies) != 1 || !strings.HasPrefix(cookies[0], "hookvault_admin=") {
+	if len(cookies) != 1 || !strings.HasPrefix(cookies[0], cookieName) {
 		t.Fatalf("login did not set the session cookie: %v", cookies)
 	}
 	if !strings.Contains(cookies[0], "HttpOnly") {
 		t.Fatal("session cookie must be HttpOnly")
 	}
-	value := strings.SplitN(strings.TrimPrefix(cookies[0], "hookvault_admin="), ";", 2)[0]
+	session := strings.SplitN(strings.TrimPrefix(cookies[0], cookieName), ";", 2)[0]
 
-	// The cookie opens the panel pages and the management API.
-	for _, path := range []string{"/", "/new"} {
-		status, body, _ := do(t, http.MethodGet, control.URL+path, nil,
-			map[string]string{"Cookie": "hookvault_admin=" + value})
-		if status != http.StatusOK {
-			t.Fatalf("%s with session cookie: status %d, body %s", path, status, body)
-		}
+	// The cookie opens the panel pages…
+	status, body, _ = request(t, panelClient, http.MethodGet, control.URL+"/", cookieName+session, "")
+	if status != http.StatusOK || !strings.Contains(body, "New endpoint") {
+		t.Fatalf("dashboard with session: status %d (body %s)", status, body)
+	}
+	status, body, _ = request(t, panelClient, http.MethodGet, control.URL+"/new", cookieName+session, "")
+	if status != http.StatusOK || !strings.Contains(body, "generate in this browser") {
+		t.Fatalf("create page with session: status %d (body %s)", status, body)
 	}
 
-	// The management API accepts the cookie instead of the Bearer header.
-	status, apiBody, _ := do(t, http.MethodGet, control.URL+"/v1/endpoints", nil,
-		map[string]string{"Cookie": "hookvault_admin=" + value})
-	if status != http.StatusOK {
-		t.Fatalf("API with session cookie: status %d, body %s", status, apiBody)
-	}
-	if !strings.Contains(string(apiBody), `"endpoints"`) {
-		t.Fatalf("the API response does not look like the endpoints list: %s", apiBody)
+	// …and the management API, instead of the Bearer header.
+	status, body, _ = request(t, panelClient, http.MethodGet, control.URL+"/v1/endpoints", cookieName+session, "")
+	if status != http.StatusOK || !strings.Contains(body, `"endpoints"`) {
+		t.Fatalf("API with session: status %d, body %s", status, body)
 	}
 
-	// A tampered cookie is rejected.
-	status, _, _ = do(t, http.MethodGet, control.URL+"/", nil,
-		map[string]string{"Cookie": "hookvault_admin=AAAA." + strings.SplitN(value, ".", 2)[1]})
+	// A tampered cookie is rejected — JSON, because it hit the API middleware.
+	status, body, _ = request(t, panelClient, http.MethodGet, control.URL+"/v1/endpoints", cookieName+"AAAA.forged", "")
 	if status != http.StatusUnauthorized {
-		t.Fatal("a tampered session was accepted")
+		t.Fatalf("tampered cookie: status %d, body %s", status, body)
 	}
 
 	// The Bearer header still works for scripts.
-	status, _, _ = do(t, http.MethodGet, control.URL+"/v1/endpoints", nil,
+	status, apiBody, _ := do(t, http.MethodGet, control.URL+"/v1/endpoints", nil,
 		map[string]string{"Authorization": "Bearer topsecret"})
 	if status != http.StatusOK {
-		t.Fatalf("bearer on control plane: status %d", status)
+		t.Fatalf("bearer on control plane: status %d, body %s", status, apiBody)
 	}
 
-	// Log out clears the cookie.
-	req, err := http.NewRequest(http.MethodGet, control.URL+"/logout", nil)
-	if err != nil {
-		t.Fatalf("build logout: %v", err)
+	// Log out clears the cookie…
+	status, body, headers = request(t, panelClient, http.MethodGet, control.URL+"/logout", cookieName+session, "")
+	if status != http.StatusSeeOther {
+		t.Fatalf("logout: status %d, body %s", status, body)
 	}
-	req.Header.Set("Cookie", "hookvault_admin="+value)
-	resp, err := noRedirect.Do(req)
-	if err != nil {
-		t.Fatalf("logout: %v", err)
+	if !strings.Contains(headers.Get("Set-Cookie"), "Max-Age=0") {
+		t.Fatalf("logout did not clear the cookie: %q", headers.Get("Set-Cookie"))
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusSeeOther {
-		t.Fatalf("logout: status %d", resp.StatusCode)
-	}
-	if !strings.Contains(resp.Header.Get("Set-Cookie"), "Max-Age=0") {
-		t.Fatalf("logout did not clear the cookie: %q", resp.Header.Get("Set-Cookie"))
+
+	// …and the dashboard is locked again.
+	status, _, headers = request(t, panelClient, http.MethodGet, control.URL+"/", "", "")
+	if status != http.StatusSeeOther || headers.Get("Location") != "/login" {
+		t.Fatalf("after logout: status %d, location %q", status, headers.Get("Location"))
 	}
 }
 

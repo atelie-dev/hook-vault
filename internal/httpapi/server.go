@@ -103,7 +103,7 @@ func (s *Server) ControlPlane() http.Handler {
 	mux.HandleFunc("POST /login", s.panelLoginPost)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(webui.Static()))))
 	mux.Handle("/v1/", s.requireAdminToken(api))
-	mux.Handle("/", s.requireAdminToken(panel))
+	mux.Handle("/", s.requireAdminPanel(panel))
 	return s.wrap(mux)
 }
 
@@ -143,6 +143,8 @@ func (s *Server) withRecover(next http.Handler) http.Handler {
 	})
 }
 
+// requireAdminToken guards the management API: scripts and the panel's own
+// fetch calls expect a JSON error they can act on.
 func (s *Server) requireAdminToken(next http.Handler) http.Handler {
 	if s.adminToken == "" {
 		// Only reachable when the listener is loopback-only; config.validate
@@ -156,6 +158,21 @@ func (s *Server) requireAdminToken(next http.Handler) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// requireAdminPanel guards the panel pages: a person opening the panel should
+// land on the login form, not on a JSON error.
+func (s *Server) requireAdminPanel(next http.Handler) http.Handler {
+	if s.adminToken == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authenticated(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
 	})
 }
 
