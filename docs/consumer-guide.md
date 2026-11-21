@@ -159,6 +159,28 @@ hook-vault fetch --url https://hooks.example.com --key-file ~/.hookvault.key \
 already processed. If what you want is the backlog *once*, run without `--watch`
 (the one-shot read already begins at the oldest stored event).
 
+### Push instead of poll
+
+`--watch` polls. If you are writing your own consumer, `GET /v1/events/stream`
+pushes the same feed as server-sent events, with no polling loop:
+
+```bash
+curl -N -H "Authorization: Bearer $HOOKVAULT_TOKEN" \
+  https://hooks.example.com/v1/events/stream
+```
+
+- The frame `id` is the cursor: store it, then reconnect with `?cursor=` or with
+  the `Last-Event-ID` header (what a browser `EventSource` sends for you).
+- `data` is one element of `events[]` as JSON, still sealed; open it with the key
+  exactly as in step 3.
+- Frames leave in commit order, so the last stored `id` is a safe resume point.
+- `include_rejected=true` works here too.
+- A `: ping` comment every 15 seconds keeps the connection alive, and your proxy
+  must not buffer the response.
+
+The `fetch --watch` CLI still polls today; moving it onto the stream is a
+separate change.
+
 ### A time window instead of the whole log
 
 `--since` takes a duration, the kubectl word forms, or an absolute timestamp:

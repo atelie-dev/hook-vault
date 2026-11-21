@@ -31,9 +31,13 @@ const (
 	DefaultIngestAddr   = ":8080"
 	DefaultAdminAddr    = "127.0.0.1:8081"
 	DefaultMaxBodyBytes = 1 << 20 // 1 MiB, above Stripe's cap and far below GitHub's
-	DefaultReadLag      = 2 * time.Second
-	DefaultReaper       = 60 * time.Second
-	DefaultShutdown     = 15 * time.Second
+	// Zero, because store.InsertEvent serializes id assignment per endpoint:
+	// id order is commit order, so a cursor cannot skip a late commit. The flag
+	// stays for operators who want a belt-and-braces bound and for rolling
+	// upgrades from a server that did not serialize.
+	DefaultReadLag  = 0
+	DefaultReaper   = 60 * time.Second
+	DefaultShutdown = 15 * time.Second
 )
 
 // Load parses arguments and environment variables.
@@ -57,7 +61,7 @@ func Load(args []string) (*Config, error) {
 	fs.Int64Var(&cfg.MaxBodyBytes, "max-body-bytes", envInt("HOOKVAULT_MAX_BODY_BYTES", DefaultMaxBodyBytes),
 		"largest accepted webhook body")
 	fs.DurationVar(&cfg.ReadLag, "read-lag", envDuration("HOOKVAULT_READ_LAG", DefaultReadLag),
-		"how far behind now the read API stays, so an in-flight insert is never skipped by a cursor")
+		"visibility lag for the read API; 0 trusts the serialized insert ordering (default)")
 	fs.DurationVar(&cfg.ReaperInterval, "reaper-interval", envDuration("HOOKVAULT_REAPER_INTERVAL", DefaultReaper),
 		"how often retention policies are enforced")
 	fs.DurationVar(&cfg.ShutdownTimeout, "shutdown-timeout", envDuration("HOOKVAULT_SHUTDOWN_TIMEOUT", DefaultShutdown),

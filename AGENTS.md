@@ -34,8 +34,10 @@ Integration tests **drop and recreate the public schema**. Never point
 3. **Uuidv7 ids come from PostgreSQL** (`default uuidv7()`), never from Go. Two
    clocks means an id smaller than a cursor can arrive later, which is silently
    lost work.
-4. **The read API keeps the `--read-lag` bound.** Removing it reintroduces the
-   race where a reader advances past a row whose insert has not committed.
+4. **Insert order is commit order.** `InsertEvent` takes the endpoint row lock
+   *before* the id is assigned, per endpoint. That is what lets a reader trust
+   `id > cursor` with no lag; remove the lock and every cursor becomes lossy.
+   `--read-lag` stays as an operator knob (default 0), not as the guarantee.
 5. **Retention evicts, never rejects.** A 5xx on quota turns one lost batch into
    an amplified retry storm.
 6. **A failed signature is stored as evidence** (`status='rejected'`), answered
@@ -94,3 +96,6 @@ copy the reported `got:` value back, and rebuild.
 The `go` line in `go.mod` is a floor, not a version pin: `atelie-server`
 consumes this flake with `inputs.nixpkgs.follows` and builds with its own
 nixpkgs, so never raise it past the Go that pin ships (1.26.10 as of nixos-26.05).
+
+A flake build reads only what Git tracks: `git add` a new source file before
+`nix build`, or the build fails on the symbol that file defines.

@@ -1,4 +1,4 @@
-<!-- Context: project-intelligence/navigation | Priority: critical | Version: 1.1 | Updated: 2026-11-21 -->
+<!-- Context: project-intelligence/navigation | Priority: critical | Version: 1.2 | Updated: 2026-11-21 -->
 
 # Project Intelligence — hook-vault
 
@@ -22,7 +22,8 @@
 | `internal/webui/static/keygen.js` | Panel key generation — the WebCrypto twin of `vault`, byte-identical derivation |
 | `internal/store/store.go` | Schema/query change: every SQL statement lives here, including the cursor and the reaper |
 | `internal/httpapi/{ingest,read,admin,panel}.go` | Data plane vs control plane behaviour, auth, and the session cookie |
-| `internal/httpapi/verify.go` | Verification profiles (`github`/`meta`/`generic` HMAC, `stripe`, `none`) and the `meta` whitelist |
+| `internal/httpapi/stream.go` | The SSE endpoint: frame shape, resume cursor, ping, and why frames leave in id order |
+| `internal/httpapi/verify.go` | Verification profiles (`github`/`meta`/`generic-hmac` HMAC, `stripe`, `none`) and the `meta` whitelist |
 | `internal/config/config.go` | Flags vs `HOOKVAULT_*` env, defaults, and the combinations it refuses |
 | `internal/webui/templates/*.html` | Panel UI — `create.html` carries the keygen flow and the profile→verify-token coupling |
 | `migrations/0001_init.sql` | Schema, constraints and the reasoning comments |
@@ -39,6 +40,7 @@ fleet DNS-01 token), and `PLANNED.md` for the 2026-11-21 ops entries.
 - Schema or retention change → `technical-domain.md` + `migrations/`
 - New panel route → `technical-domain.md` (panel section) + a test that renders it
 - New verification profile or route → `technical-domain.md` (Routes) + `verify.go` / `server.go`
+- New stream frame or field → `technical-domain.md` (Routes) + `README.md` + `docs/consumer-guide.md`
 - A bug that cost real time → add it under "Gotchas paid for in blood", with the
   symptom, not just the fix
 - A contract change (crypto, cursor, retention) → bump the version here **and**

@@ -425,8 +425,16 @@ type InsertEventParams struct {
 	Meta       []byte
 }
 
-// InsertEvent stores the ciphertext and bumps the endpoint counters in the same
-// statement, so quota accounting cannot drift from the rows.
+// InsertEvent stores the ciphertext and bumps the endpoint counters in one
+// transaction, so quota accounting cannot drift from the rows.
+//
+// The counter UPDATE runs first on purpose. It takes the endpoint row lock
+// before the insert evaluates `default uuidv7()`, so two concurrent deliveries
+// to one endpoint cannot take ids in one order and commit in the other: an id
+// is only assigned while holding the lock, and the lock is only released at
+// commit. That is what lets readers trust `id > cursor` with no visibility lag
+// (AGENTS invariant 4) — the price is that deliveries to one endpoint queue,
+// which for a webhook inbox is a millisecond of insert, not of provider latency.
 func (s *Store) InsertEvent(ctx context.Context, p InsertEventParams) (string, error) {
 	if len(p.Meta) == 0 {
 		p.Meta = []byte(`{}`)
@@ -436,22 +444,36 @@ func (s *Store) InsertEvent(ctx context.Context, p InsertEventParams) (string, e
 		status = "stored"
 	}
 
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("insert event: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, `
+		update endpoint
+		   set bytes_used = bytes_used + $2,
+		       events_used = events_used + 1
+		 where id = $1::uuid`,
+		p.EndpointID, p.SizeBytes)
+	if err != nil {
+		return "", fmt.Errorf("insert event: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return "", ErrNotFound
+	}
+
 	var id string
-	err := s.pool.QueryRow(ctx, `
-		with ins as (
-			insert into event (endpoint_id, kid, ciphertext, size_bytes, status, meta)
-			values ($1::uuid, $2, $3, $4, $5, $6::jsonb)
-			returning id::text, size_bytes
-		), bump as (
-			update endpoint e
-			   set bytes_used = e.bytes_used + (select size_bytes from ins),
-			       events_used = e.events_used + 1
-			 where e.id = $1::uuid
-		)
-		select id from ins`,
+	err = tx.QueryRow(ctx, `
+		insert into event (endpoint_id, kid, ciphertext, size_bytes, status, meta)
+		values ($1::uuid, $2, $3, $4, $5, $6::jsonb)
+		returning id::text`,
 		p.EndpointID, p.KID, p.Ciphertext, p.SizeBytes, status, string(p.Meta),
 	).Scan(&id)
 	if err != nil {
+		return "", fmt.Errorf("insert event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return "", fmt.Errorf("insert event: %w", err)
 	}
 	return id, nil
@@ -469,15 +491,16 @@ type FetchParams struct {
 
 // FetchEvents returns up to Limit events after Cursor in id order.
 //
-// The received_at bound keeps the API Lag behind now: an id can be assigned
-// before its transaction commits, and without the bound a reader could advance
-// its cursor past a row that becomes visible a moment later.
+// Lag is the visibility bound: with a non-zero value the query ignores rows
+// younger than Lag, the old guard against reading an id whose transaction had
+// not committed yet. InsertEvent serializes id assignment per endpoint, so
+// ordering holds without it and zero means "no bound at all".
 func (s *Store) FetchEvents(ctx context.Context, p FetchParams) ([]Event, bool, error) {
 	rows, err := s.pool.Query(ctx, `
 		select id::text, received_at, coalesce(kid, ''), alg, ciphertext, size_bytes, status, meta
 		  from event
 		 where endpoint_id = $1::uuid
-		   and received_at < now() - make_interval(secs => $2)
+		   and ($2::float8 <= 0 or received_at < now() - make_interval(secs => $2))
 		   and ($3::text is null or id > $3::uuid)
 		   and ($4::boolean or status = 'stored')
 		   and ($5::timestamptz is null or received_at >= $5)
@@ -537,7 +560,7 @@ func (s *Store) Newest(ctx context.Context, endpointID string, lag time.Duration
 	err := s.pool.QueryRow(ctx, `
 		select (select id::text from event
 		         where endpoint_id = $1::uuid
-		           and received_at < now() - make_interval(secs => $2)
+		           and ($2::float8 <= 0 or received_at < now() - make_interval(secs => $2))
 		         order by id desc
 		         limit 1)`, endpointID, lag.Seconds()).Scan(&newest)
 	if err != nil {

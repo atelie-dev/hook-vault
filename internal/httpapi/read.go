@@ -106,16 +106,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		NextCursor:   cursor,
 	}
 	for _, event := range events {
-		out.Events = append(out.Events, eventDTO{
-			ID:         event.ID,
-			ReceivedAt: event.ReceivedAt,
-			KID:        event.KID,
-			Alg:        event.Alg,
-			CT:         base64.RawURLEncoding.EncodeToString(event.Ciphertext),
-			Size:       event.SizeBytes,
-			Status:     event.Status,
-			Meta:       event.Meta,
-		})
+		out.Events = append(out.Events, s.toDTO(event))
 	}
 	if len(out.Events) > 0 {
 		last := out.Events[len(out.Events)-1].ID
@@ -123,6 +114,21 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, out)
+}
+
+// toDTO renders one event for the wire. The paginated read and the stream share
+// it, so a consumer needs exactly one decoder.
+func (s *Server) toDTO(event store.Event) eventDTO {
+	return eventDTO{
+		ID:         event.ID,
+		ReceivedAt: event.ReceivedAt,
+		KID:        event.KID,
+		Alg:        event.Alg,
+		CT:         base64.RawURLEncoding.EncodeToString(event.Ciphertext),
+		Size:       event.SizeBytes,
+		Status:     event.Status,
+		Meta:       event.Meta,
+	}
 }
 
 // handleMe lets a consumer read its own posture: which key it is using, how

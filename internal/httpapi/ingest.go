@@ -105,6 +105,10 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Committed: wake the open streams. Rejected events wake too, since a stream
+	// opened with include_rejected has to see them.
+	s.wakeReaders()
+
 	w.Header().Set("X-HookVault-Event-Id", id)
 
 	if !verification.Verified {

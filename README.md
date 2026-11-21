@@ -309,6 +309,7 @@ before decoding; Node, Go and PHP do not.
 | `POST` | `/in/{slug}` | the provider endpoint; `X-HookVault-Event-Id` in the response |
 | `GET` | `/in/{slug}?hub.mode=subscribe&hub.verify_token=…&hub.challenge=…` | Meta subscription handshake, echoes the challenge |
 | `GET` | `/v1/events?cursor=&limit=&since=&include_rejected=` | bearer token; `limit` ≤ 1000, default 100; `since` is a duration (`10m`, `2hours`) or RFC3339, resolved against the database clock |
+| `GET` | `/v1/events/stream?cursor=&include_rejected=` | the same feed as server-sent events; the frame `id` is the cursor |
 | `GET` | `/v1/me` | key id, storage counters, both ends of the log (`cursor.oldest`, `cursor.newest`) |
 
 `GET /v1/events` returns:
@@ -330,7 +331,7 @@ before decoding; Node, Go and PHP do not.
   "next_cursor": "01a1fc71-7463-724b-8018-64547812afb1",
   "has_more": false,
   "oldest_cursor": "01a1fc71-7463-724b-8018-64547812afb1",
-  "lag_seconds": 2
+  "lag_seconds": 0
 }
 ```
 
@@ -338,6 +339,32 @@ The consumer holds the cursor; the server keeps no per-reader state. `meta` is
 the only plaintext: the source profile and two provider ids, whitelisted so the
 panel and filters work without decrypting anything. Never the body, never the
 headers.
+
+### Streaming
+
+`GET /v1/events/stream` is the same feed pushed as server-sent events: same
+bearer token, same `include_rejected`, same event shape inside `data`, and the
+frame `id` is the cursor to resume from.
+
+```bash
+curl -N -H "Authorization: Bearer $HOOKVAULT_TOKEN" \
+  "https://hooks.example.com/v1/events/stream"
+```
+
+```
+retry: 2000
+
+id: 01a1fc71-7463-724b-8018-64547812afb1
+event: event
+data: {"id":"01a1fc71-7463-724b-8018-64547812afb1","received_at":"…","kid":"kh5sikhlk2z","alg":"x25519-xsalsa20poly1305-sealed","ct":"h5E…","size":110,"status":"stored","meta":{…}}
+```
+
+Resume with `?cursor=` or with the `Last-Event-ID` header, which a browser
+`EventSource` sends by itself after a reconnect. Frames leave in id order —
+which is commit order — so a client that stores the last `id` never skips an
+event. A `: ping` comment every 15 seconds keeps proxies from closing an idle
+connection, and the proxy must not buffer the response (Caddy: `flush_interval
+-1`).
 
 ### Cursor semantics
 
@@ -349,9 +376,11 @@ Three details make it correct rather than merely convenient:
 1. **The database generates the id** (`default uuidv7()`), never the application.
    Two clocks means an id smaller than the cursor can arrive later, and with a
    client-held cursor that event is lost.
-2. **The read API lags `now()` by `--read-lag`** (default 2s). An id is assigned
-   before its transaction commits; without the lag a reader could advance past a
-   row that becomes visible a moment later.
+2. **Insert order is commit order.** The insert takes the endpoint's row lock
+   before PostgreSQL assigns the id, so two deliveries to one endpoint cannot
+   take ids in one order and commit in the other. That is what lets `id > cursor`
+   skip nothing without a lag; `--read-lag` (default 0) remains as an optional
+   visibility bound, useful when upgrading from a server that did not serialize.
 3. **`oldest_cursor` is always returned.** When retention deletes history, a
    consumer whose cursor is older than that has a gap and can say so instead of
    silently believing it is up to date.

@@ -41,6 +41,7 @@ type Server struct {
 	adminToken   string
 	logger       *slog.Logger
 	version      string
+	wake         chan struct{}
 }
 
 // New builds a Server. A nil logger falls back to slog.Default.
@@ -57,6 +58,17 @@ func New(opts Options) *Server {
 		adminToken:   opts.AdminToken,
 		logger:       logger,
 		version:      opts.Version,
+		wake:         make(chan struct{}, 1),
+	}
+}
+
+// wakeReaders nudges open streams after a commit. Non-blocking, because one
+// pending wake-up is enough: the stream re-reads everything visible when it
+// wakes, so a coalesced signal loses nothing.
+func (s *Server) wakeReaders() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -66,6 +78,7 @@ func (s *Server) DataPlane() http.Handler {
 	mux.HandleFunc("POST /in/{slug}", s.handleIngest)
 	mux.HandleFunc("GET /in/{slug}", s.handleHandshake)
 	mux.HandleFunc("GET /v1/events", s.handleEvents)
+	mux.HandleFunc("GET /v1/events/stream", s.handleEventsStream)
 	mux.HandleFunc("GET /v1/me", s.handleMe)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("/", s.notFound)
@@ -213,6 +226,18 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	r.written += n
 	return n, err
 }
+
+// Flush lets a streaming handler push frames: without it the SSE handler could
+// not reach the real ResponseWriter through the logging wrapper.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap exposes the real writer to http.ResponseController, which needs it for
+// the per-frame write deadline on a long-lived stream.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 type errorBody struct {
 	Code    string `json:"code"`

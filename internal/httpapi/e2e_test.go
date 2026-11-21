@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/hmac"
@@ -15,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -582,5 +584,172 @@ func TestKeyBelongsToExactlyOneEndpoint(t *testing.T) {
 		map[string]string{"Content-Type": "application/json"})
 	if status != http.StatusCreated {
 		t.Fatalf("idempotent re-registration: status %d, want 201 (body %s)", status, respBody)
+	}
+}
+
+// TestReadersNeverSkipEventsUnderConcurrentInserts is the invariant 4 regression
+// test: with no visibility lag, a reader that advances its cursor while writers
+// hammer one endpoint must still see every event. Before InsertEvent took the
+// endpoint row lock before assigning the id, a reader could read a larger id
+// first and then never fetch the smaller one that committed later.
+func TestReadersNeverSkipEventsUnderConcurrentInserts(t *testing.T) {
+	_, control, st := newHarness(t)
+	key, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	endpoint := createEndpoint(t, control.URL, key, nil)
+
+	const writers, perWriter = 12, 20
+	total := writers * perWriter
+
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perWriter; j++ {
+				if _, err := st.InsertEvent(context.Background(), store.InsertEventParams{
+					EndpointID: endpoint.Endpoint.ID,
+					KID:        endpoint.Key.KID,
+					Ciphertext: []byte{0x01, 0x02, 0x03},
+					SizeBytes:  3,
+				}); err != nil {
+					t.Errorf("insert: %v", err)
+					return
+				}
+			}
+		}()
+	}
+
+	seen := make(map[string]bool, total)
+	var cursor *string
+	deadline := time.Now().Add(30 * time.Second)
+	for len(seen) < total && time.Now().Before(deadline) {
+		page, _, err := st.FetchEvents(context.Background(), store.FetchParams{
+			EndpointID: endpoint.Endpoint.ID,
+			Cursor:     cursor,
+			Limit:      7,
+			Lag:        0,
+		})
+		if err != nil {
+			t.Fatalf("fetch: %v", err)
+		}
+		for _, event := range page {
+			if seen[event.ID] {
+				t.Fatalf("event %s returned twice", event.ID)
+			}
+			seen[event.ID] = true
+			id := event.ID
+			cursor = &id
+		}
+		if len(page) == 0 {
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	wg.Wait()
+
+	// Drain whatever committed after the loop's last poll: the set must be exact.
+	for {
+		page, _, err := st.FetchEvents(context.Background(), store.FetchParams{
+			EndpointID: endpoint.Endpoint.ID,
+			Cursor:     cursor,
+			Limit:      100,
+			Lag:        0,
+		})
+		if err != nil {
+			t.Fatalf("final fetch: %v", err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, event := range page {
+			seen[event.ID] = true
+			id := event.ID
+			cursor = &id
+		}
+	}
+
+	if len(seen) != total {
+		t.Fatalf("reader saw %d of %d events: %d were skipped by the cursor", len(seen), total, total-len(seen))
+	}
+}
+
+// TestEventsStreamPushesCommittedEvents covers the SSE path end to end: the
+// stream opens with the token, an ingest commits, and the frame arrives without
+// the client asking again.
+func TestEventsStreamPushesCommittedEvents(t *testing.T) {
+	dataPlane, control, _ := newHarness(t)
+	key, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	endpoint := createEndpoint(t, control.URL, key, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dataPlane.URL+"/v1/events/stream", nil)
+	if err != nil {
+		t.Fatalf("build stream request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key.Token)
+
+	resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // the body is drained by the scanner goroutine below and closed by the deferred Close
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("content type = %q, want text/event-stream", ct)
+	}
+
+	lines := make(chan string, 64)
+	go func() {
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(lines)
+	}()
+
+	status, body, _ := do(t, http.MethodPost, dataPlane.URL+"/in/"+endpoint.Endpoint.Slug,
+		[]byte(`{"hello":"world"}`), map[string]string{"Content-Type": "application/json"})
+	if status != http.StatusOK {
+		t.Fatalf("ingest status = %d, want 200 (body %s)", status, body)
+	}
+	var ingested struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &ingested); err != nil {
+		t.Fatalf("decode ingest response: %v", err)
+	}
+
+	timeout := time.After(10 * time.Second)
+	sawRetry := false
+	for {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.Fatalf("stream closed before delivering event %s", ingested.ID)
+			}
+			switch {
+			case strings.HasPrefix(line, "retry: "):
+				sawRetry = true
+			case strings.HasPrefix(line, "id: "):
+				if strings.TrimPrefix(line, "id: ") == ingested.ID {
+					if !sawRetry {
+						t.Fatal("the stream must send its retry hint before any event")
+					}
+					return
+				}
+			}
+		case <-timeout:
+			t.Fatalf("stream did not deliver event %s", ingested.ID)
+		}
 	}
 }
