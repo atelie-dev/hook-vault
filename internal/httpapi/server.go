@@ -1,0 +1,229 @@
+// Package httpapi exposes two surfaces with two audiences:
+//
+//   - the data plane: public ingest and the token-authenticated read API;
+//   - the control plane: endpoint management, keys and statistics.
+//
+// Keeping them on separate listeners is a product decision (only one of them is
+// meant to face the internet), and it happens to map cleanly onto any reverse
+// proxy topology without the binary knowing about one.
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"runtime/debug"
+	"time"
+
+	"github.com/atelie-dev/hook-vault/internal/store"
+	"github.com/atelie-dev/hook-vault/internal/vault"
+)
+
+// Options configures a Server.
+type Options struct {
+	Store        *store.Store
+	PublicURL    string
+	MaxBodyBytes int64
+	ReadLag      time.Duration
+	AdminToken   string
+	Logger       *slog.Logger
+}
+
+// Server holds the handlers and their dependencies.
+type Server struct {
+	store        *store.Store
+	publicURL    string
+	maxBodyBytes int64
+	readLag      time.Duration
+	adminToken   string
+	logger       *slog.Logger
+}
+
+// New builds a Server. A nil logger falls back to slog.Default.
+func New(opts Options) *Server {
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Server{
+		store:        opts.Store,
+		publicURL:    opts.PublicURL,
+		maxBodyBytes: opts.MaxBodyBytes,
+		readLag:      opts.ReadLag,
+		adminToken:   opts.AdminToken,
+		logger:       logger,
+	}
+}
+
+// DataPlane returns the public handler: ingest plus the read API.
+func (s *Server) DataPlane() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /in/{slug}", s.handleIngest)
+	mux.HandleFunc("GET /in/{slug}", s.handleHandshake)
+	mux.HandleFunc("GET /v1/events", s.handleEvents)
+	mux.HandleFunc("GET /v1/me", s.handleMe)
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("/", s.notFound)
+	return s.wrap(mux)
+}
+
+// ControlPlane returns the management handler. It is never meant to face the
+// internet; when it listens beyond loopback, adminToken is mandatory.
+func (s *Server) ControlPlane() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/endpoints", s.handleCreateEndpoint)
+	mux.HandleFunc("GET /v1/endpoints", s.handleListEndpoints)
+	mux.HandleFunc("GET /v1/endpoints/{id}", s.handleGetEndpoint)
+	mux.HandleFunc("PATCH /v1/endpoints/{id}", s.handlePatchEndpoint)
+	mux.HandleFunc("GET /v1/endpoints/{id}/keys", s.handleListKeys)
+	mux.HandleFunc("POST /v1/endpoints/{id}/keys", s.handleRegisterKey)
+	mux.HandleFunc("DELETE /v1/endpoints/{id}/keys/{kid}", s.handleRevokeKey)
+	mux.HandleFunc("GET /v1/endpoints/{id}/stats", s.handleStats)
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("/", s.notFound)
+	return s.wrap(s.requireAdminToken(mux))
+}
+
+func (s *Server) wrap(next http.Handler) http.Handler {
+	return s.withRecover(s.withRequestLog(next))
+}
+
+func (s *Server) withRequestLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		s.logger.Info("request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"bytes", rec.written,
+			"remote", r.RemoteAddr,
+			"duration_ms", time.Since(start).Milliseconds(),
+		)
+	})
+}
+
+func (s *Server) withRecover(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				s.logger.Error("panic serving request",
+					"path", r.URL.Path,
+					"panic", recovered,
+					"stack", string(debug.Stack()),
+				)
+				writeError(w, http.StatusInternalServerError, "internal", "internal error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) requireAdminToken(next http.Handler) http.Handler {
+	if s.adminToken == "" {
+		// Only reachable when the listener is loopback-only; config.validate
+		// refuses any other combination.
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := bearerToken(r)
+		if token == "" {
+			token = r.Header.Get("X-Admin-Token")
+		}
+		if !vault.TokensEqual(token, s.adminToken) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="hook-vault-admin"`)
+			writeError(w, http.StatusUnauthorized, "unauthorized", "a valid admin token is required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	if err := s.store.Pool().Ping(ctx); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "database_unavailable", "database is not reachable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusNotFound, "not_found", "no such route")
+}
+
+// statusRecorder captures what the log needs without buffering the response.
+type statusRecorder struct {
+	http.ResponseWriter
+	status  int
+	written int
+	wrote   bool
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if !r.wrote {
+		r.status = code
+		r.wrote = true
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	r.wrote = true
+	n, err := r.ResponseWriter.Write(b)
+	r.written += n
+	return n, err
+}
+
+type errorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, errorBody{Code: code, Message: message})
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func bearerToken(r *http.Request) string {
+	value := r.Header.Get("Authorization")
+	if value == "" {
+		return ""
+	}
+	const prefix = "bearer "
+	if len(value) < len(prefix) || !equalFoldASCII(value[:len(prefix)], prefix) {
+		return ""
+	}
+	return value[len(prefix):]
+}
+
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if 'A' <= ca && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if 'A' <= cb && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
+func isNotFound(err error) bool { return errors.Is(err, store.ErrNotFound) }

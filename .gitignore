@@ -1,0 +1,10 @@
+/bin/
+/dist/
+*.test
+*.out
+/tmp/
+/.tmp/
+.env
+.env.*
+!.env.example
+result
