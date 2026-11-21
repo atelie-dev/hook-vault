@@ -34,6 +34,10 @@ Integration tests **drop and recreate the public schema**. Never point
    an amplified retry storm.
 6. **A failed signature is stored as evidence** (`status='rejected'`), answered
    with 401, and hidden from the default read.
+7. **No user accounts, ever.** The control plane has one service credential
+   (`--admin-token`); SSO belongs in a proxy in front of it (oauth2-proxy,
+   Cloudflare Access) or in the network (loopback, VPN). Adding a user or
+   session table here means the threat model in the README is a lie.
 
 ## Layout
 

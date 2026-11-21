@@ -77,6 +77,46 @@ curl -X POST http://127.0.0.1:8081/v1/endpoints -H 'content-type: application/js
 }'
 ```
 
+The response is where the generated `slug` shows up:
+
+```json
+{
+  "endpoint": {
+    "id": "01a1fc71-0c78-7dc8-a451-3cabc41c8861",
+    "slug": "bf5gk5ydrbdm2zl7kg5yt6o7vu",
+    "name": "github prod",
+    "ingest_url": "https://hooks.example.com/in/bf5gk5ydrbdm2zl7kg5yt6o7vu",
+    "retention_days": 30,
+    "max_bytes": 1073741824,
+    "bytes_used": 0,
+    "events_used": 0,
+    "evicted_events": 0,
+    "verify": "github",
+    "active_kid": "kh5sikhlk2z",
+    "created_at": "2026-11-21T04:49:48.675Z",
+    "disabled_at": null
+  },
+  "key": {
+    "kid": "kh5sikhlk2z",
+    "public_key": "Na578D0r1oE2mDC88bX81qxemS2wjjdtn0YxFASYskk",
+    "active": true,
+    "created_at": "2026-11-21T04:49:48.675Z",
+    "revoked_at": null
+  }
+}
+```
+
+**The slug** is generated server-side when the request omits it: 128 bits from
+`crypto/rand`, base32 lower-case (`a-z2-7`), 26 characters. It is *not* an
+authentication mechanism — the provider signature is — it exists so background
+scanners do not find endpoints and so a URL leaking into a log does not name the
+product. Send your own `slug` (12–64 characters, lowercase alphanumerics) when a
+readable path is worth more than an unguessable one; uniqueness is enforced by
+the database. It is the last segment of `ingest_url` and it is what `GET /v1/me`
+returns, so a consumer never has to remember it.
+
+`verify_secret` is write-only: it never comes back in any response.
+
 GitHub now posts to `https://hooks.example.com/in/<slug>`. Read it back:
 
 ```bash
@@ -101,6 +141,39 @@ refuses to start without it.
 
 The read API is safe to expose because it can only return ciphertext and it
 requires a token derived from a key the server never sees.
+
+## Authentication
+
+hook-vault has no user accounts, no sessions and no login. That is deliberate:
+it is one process over one database, and the credential that actually matters —
+the read token — is derived from a key the server never sees, so there is nothing
+a user model could protect that the token does not already bound.
+
+What exists:
+
+| Surface | Credential |
+|---|---|
+| `POST /in/{slug}` | the provider signature (`X-Hub-Signature-256`, `Stripe-Signature`, …) |
+| `GET /v1/events`, `GET /v1/me` | a bearer token derived from the endpoint's secret key |
+| control plane | one `--admin-token`, a service credential, not a person |
+
+What does not exist: per-user access, roles, an audit trail of who changed what,
+or a panel login. If more than one person needs the control plane, put a real
+authenticator in front of it instead of asking this process to grow one:
+
+| | |
+|---|---|
+| **oauth2-proxy** | SSO (Google, GitHub, OIDC) in front of the control-plane listener; injects `X-Admin-Token` upstream so the app keeps its single service credential |
+| **Cloudflare Access** | the gate runs at the edge, nothing in the app changes |
+| **Tailscale / WireGuard** | the network is the gate — bind the control plane to loopback or a private interface |
+
+Gate the **control plane only**. The ingest path must stay reachable without a
+login: providers do not authenticate, and they do not follow a redirect to an SSO
+page. Its authentication is the HMAC over the raw body, which is also why
+`verify: "none"` is only reasonable for endpoints you control end to end.
+
+The two-listener split exists so that this stays a proxy and network decision
+rather than an application feature.
 
 ## How a payload is sealed
 
@@ -257,9 +330,10 @@ v0.1.0 — ingest, verification, sealed storage, cursor read API, retention and
 key management. Not yet: a browser panel, consumer-controlled acknowledgement,
 monthly partitioning.
 
-Deliberately out of scope: retries, fan-out, transformations, acting as a
-queue. This is an append-only log. If you need to push events to consumers, put
-Svix or Hookdeck Outpost in front of it.
+Deliberately out of scope: user accounts (see [Authentication](#authentication)),
+retries, fan-out, transformations, acting as a queue. This is an append-only
+log. If you need to push events to consumers, put Svix or Hookdeck Outpost in
+front of it.
 
 ## License
 
