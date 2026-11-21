@@ -245,9 +245,15 @@ What exists:
 | `GET /v1/events`, `GET /v1/me` | a bearer token derived from the endpoint's secret key |
 | control plane | one `--admin-token`, a service credential, not a person |
 
-What does not exist: per-user access, roles, an audit trail of who changed what,
-or a panel login. If more than one person needs the control plane, put a real
-authenticator in front of it instead of asking this process to grow one:
+What does not exist: per-user access, roles, or an audit trail of who changed
+what.
+
+The panel logs in with that same admin token: it is checked once and exchanged
+for a stateless HttpOnly cookie (an HMAC of a nonce, keyed by the token). There
+is no session store and no way to enumerate sessions; logging out drops the
+cookie, and restarting the server does not log anyone out.
+
+If more than one person needs the control plane, put a real
 
 | | |
 |---|---|
@@ -419,9 +425,11 @@ scans the event table.
 
 ## Status
 
-v0.1.0 — ingest, verification, sealed storage, cursor read API, retention and
-key management. Not yet: a browser panel, consumer-controlled acknowledgement,
-monthly partitioning.
+v0.2.0 — ingest, verification, sealed storage, cursor read API, retention, key
+management and a control-plane panel with in-browser key generation
+(WebCrypto; see [Authentication](#authentication) for what that does and does
+not change). Not yet: consumer-controlled acknowledgement, monthly
+partitioning, in-panel decryption.
 
 Deliberately out of scope: user accounts (see [Authentication](#authentication)),
 retries, fan-out, transformations, acting as a queue. This is an append-only

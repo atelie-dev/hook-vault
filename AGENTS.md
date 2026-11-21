@@ -35,9 +35,15 @@ Integration tests **drop and recreate the public schema**. Never point
 6. **A failed signature is stored as evidence** (`status='rejected'`), answered
    with 401, and hidden from the default read.
 7. **No user accounts, ever.** The control plane has one service credential
-   (`--admin-token`); SSO belongs in a proxy in front of it (oauth2-proxy,
-   Cloudflare Access) or in the network (loopback, VPN). Adding a user or
-   session table here means the threat model in the README is a lie.
+   (`--admin-token`); the panel exchanges it for a stateless cookie on login.
+   SSO belongs in a proxy in front of it (oauth2-proxy, Cloudflare Access) or
+   in the network (loopback, VPN). Adding a user or session table here means
+   the threat model in the README is a lie.
+8. **The panel never receives key material.** Key generation and token
+   derivation happen in the browser (WebCrypto); the server sees only
+   `public_key` and `token_sha256`. If a "decrypt in the panel" feature is ever
+   added, it must decrypt client-side too — a server-side decryption path is a
+   security bug, not a feature.
 
 ## Layout
 
@@ -47,6 +53,7 @@ internal/vault/       sealed box + HKDF token derivation (the crypto contract)
 internal/store/       all SQL; the only place that knows the schema
 internal/httpapi/     data plane (ingest, read) and control plane (management)
 internal/retention/   age and size sweeps
+internal/webui/       embedded panel: templates, CSS and keygen.js
 migrations/           embedded SQL, applied by `serve` and `migrate`
 ```
 

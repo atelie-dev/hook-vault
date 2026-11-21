@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/atelie-dev/hook-vault/internal/store"
-	"github.com/atelie-dev/hook-vault/internal/vault"
+	"github.com/atelie-dev/hook-vault/internal/webui"
 )
 
 // Options configures a Server.
@@ -29,6 +29,7 @@ type Options struct {
 	ReadLag      time.Duration
 	AdminToken   string
 	Logger       *slog.Logger
+	Version      string
 }
 
 // Server holds the handlers and their dependencies.
@@ -39,6 +40,7 @@ type Server struct {
 	readLag      time.Duration
 	adminToken   string
 	logger       *slog.Logger
+	version      string
 }
 
 // New builds a Server. A nil logger falls back to slog.Default.
@@ -54,6 +56,7 @@ func New(opts Options) *Server {
 		readLag:      opts.ReadLag,
 		adminToken:   opts.AdminToken,
 		logger:       logger,
+		version:      opts.Version,
 	}
 }
 
@@ -69,21 +72,39 @@ func (s *Server) DataPlane() http.Handler {
 	return s.wrap(mux)
 }
 
-// ControlPlane returns the management handler. It is never meant to face the
-// internet; when it listens beyond loopback, adminToken is mandatory.
+// ControlPlane serves the panel, the management API and static assets.
+//
+// Three audiences on one listener:
+//
+//   - /healthz and /static/*: no credential (assets are UI code, not secrets);
+//   - /login: public by design, it *establishes* the credential;
+//   - everything else: admin token as Bearer (CLI, scripts) or as the panel's
+//     session cookie.
 func (s *Server) ControlPlane() http.Handler {
+	api := http.NewServeMux()
+	api.HandleFunc("POST /v1/endpoints", s.handleCreateEndpoint)
+	api.HandleFunc("GET /v1/endpoints", s.handleListEndpoints)
+	api.HandleFunc("GET /v1/endpoints/{id}", s.handleGetEndpoint)
+	api.HandleFunc("PATCH /v1/endpoints/{id}", s.handlePatchEndpoint)
+	api.HandleFunc("GET /v1/endpoints/{id}/keys", s.handleListKeys)
+	api.HandleFunc("POST /v1/endpoints/{id}/keys", s.handleRegisterKey)
+	api.HandleFunc("DELETE /v1/endpoints/{id}/keys/{kid}", s.handleRevokeKey)
+	api.HandleFunc("GET /v1/endpoints/{id}/stats", s.handleStats)
+
+	panel := http.NewServeMux()
+	panel.HandleFunc("GET /{$}", s.panelEndpoints)
+	panel.HandleFunc("GET /new", s.panelCreate)
+	panel.HandleFunc("GET /logout", s.panelLogout)
+	panel.HandleFunc("/", s.notFound)
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/endpoints", s.handleCreateEndpoint)
-	mux.HandleFunc("GET /v1/endpoints", s.handleListEndpoints)
-	mux.HandleFunc("GET /v1/endpoints/{id}", s.handleGetEndpoint)
-	mux.HandleFunc("PATCH /v1/endpoints/{id}", s.handlePatchEndpoint)
-	mux.HandleFunc("GET /v1/endpoints/{id}/keys", s.handleListKeys)
-	mux.HandleFunc("POST /v1/endpoints/{id}/keys", s.handleRegisterKey)
-	mux.HandleFunc("DELETE /v1/endpoints/{id}/keys/{kid}", s.handleRevokeKey)
-	mux.HandleFunc("GET /v1/endpoints/{id}/stats", s.handleStats)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.HandleFunc("/", s.notFound)
-	return s.wrap(s.requireAdminToken(mux))
+	mux.HandleFunc("GET /login", s.panelLogin)
+	mux.HandleFunc("POST /login", s.panelLoginPost)
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(webui.Static()))))
+	mux.Handle("/v1/", s.requireAdminToken(api))
+	mux.Handle("/", s.requireAdminToken(panel))
+	return s.wrap(mux)
 }
 
 func (s *Server) wrap(next http.Handler) http.Handler {
@@ -129,11 +150,7 @@ func (s *Server) requireAdminToken(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := bearerToken(r)
-		if token == "" {
-			token = r.Header.Get("X-Admin-Token")
-		}
-		if !vault.TokensEqual(token, s.adminToken) {
+		if !s.authenticated(r) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="hook-vault-admin"`)
 			writeError(w, http.StatusUnauthorized, "unauthorized", "a valid admin token is required")
 			return

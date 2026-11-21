@@ -1,0 +1,37 @@
+{{define "content"}}
+<div class="row" style="justify-content:space-between;margin:0 0 1rem">
+  <h1 style="margin:0">Endpoints</h1>
+  <a class="button primary" href="/new" style="text-decoration:none">New endpoint</a>
+</div>
+
+{{if .Endpoints}}
+<div class="card" style="padding:0 0.4rem">
+  <table>
+    <thead>
+      <tr><th>Endpoint</th><th>Ingest slug</th><th>Verify</th><th>Events</th><th>Stored</th><th>Policy</th><th>Key</th></tr>
+    </thead>
+    <tbody>
+      {{range .Endpoints}}
+      <tr>
+        <td>{{.Name}}{{if .DisabledAt}} <span class="badge err">disabled</span>{{end}}</td>
+        <td><code>{{.Slug}}</code></td>
+        <td><span class="badge">{{.Verify}}</span></td>
+        <td class="mono">{{.EventsUsed}}{{if .EvictedEvents}} <span class="badge warn" title="retention evicted {{.EvictedEvents}} events">evicting</span>{{end}}</td>
+        <td class="mono">{{bytes .BytesUsed}}{{if .MaxBytes}} / {{bytes .MaxBytes}}{{end}}</td>
+        <td class="mono">{{if .RetentionDays}}{{.RetentionDays}}d{{else}}∞{{end}}{{if .MaxBytes}} · {{end}}{{if .MaxBytes}}{{bytes .MaxBytes}}{{else}}no cap{{end}}</td>
+        <td><code>{{if .ActiveKID}}{{.ActiveKID}}{{else}}<span class="badge err">none</span>{{end}}</code></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+<p class="hint">
+  Read API: <code>GET {{if .PublicURL}}{{.PublicURL}}{{end}}/v1/events</code> with the endpoint's
+  bearer token. Values are ciphertext; decryption happens on the consumer.
+</p>
+{{else}}
+<div class="card">
+  <p class="hint">No endpoints yet. Create one to start collecting webhooks from a provider.</p>
+</div>
+{{end}}
+{{end}}

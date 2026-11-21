@@ -102,6 +102,7 @@ func runServe(args []string) error {
 		ReadLag:      cfg.ReadLag,
 		AdminToken:   cfg.AdminToken,
 		Logger:       logger,
+		Version:      version,
 	})
 
 	sweeper := retention.New(st, logger)
