@@ -167,6 +167,35 @@ If the event was sealed for another key — a rotation you have not completed �
 the CLI says so by `kid` instead of failing the whole page, and the key file
 being group/world-readable earns a warning on stderr.
 
+### Set once per project (devenv / direnv)
+
+Both flags are environment variables too, so a project's dev shell can pre-set
+them and `hook-vault fetch` needs no arguments at all:
+
+```nix
+# devenv.nix — the product repo
+{ pkgs, inputs, ... }:
+{
+  packages = [ inputs.hook-vault.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+  env.HOOKVAULT_URL = "https://webhooks.atelie.dev.br";
+  enterShell = ''
+    export HOOKVAULT_KEY_FILE="$HOME/.config/hook-vault/medax.key"
+  '';
+}
+```
+
+Keep the key outside the repository, readable only by you:
+
+```bash
+install -d -m 700 ~/.config/hook-vault
+install -m 600 ~/Downloads/hook-vault.key ~/.config/hook-vault/medax.key
+```
+
+One key pair is one endpoint, so the file is per project — that is the
+guardrail, not an inconvenience: a project's leaked key exposes that project's
+archive and nothing else. `HOOKVAULT_TOKEN_FILE` exists for contexts that must
+not hold the secret key at all (a CI job that only asserts events arrive).
+
 ## Regenerating the token
 
 The token is `"hv1_" + base64url(HKDF-SHA256(ikm=secret, salt=empty, info="hook-vault.auth.v1", L=32))`.
