@@ -1,9 +1,9 @@
-<!-- Context: project-intelligence/navigation | Priority: critical | Version: 1.3 | Updated: 2026-11-21 -->
+<!-- Context: project-intelligence/navigation | Priority: critical | Version: 1.4 | Updated: 2026-11-23 -->
 
 # Project Intelligence — hook-vault
 
 **Purpose**: index of what to read, in the order that saves time.
-**Last Updated**: 2026-11-21
+**Last Updated**: 2026-11-23
 
 ## Quick Routes
 
@@ -18,6 +18,8 @@
 | File | When to load |
 |------|--------------|
 | `docs/consumer-guide.md` | Any consumer-facing change: decrypt snippets, `fetch` formats, per-project devenv, token recovery |
+| `docs/connecting.md` | "How do I connect to this?" — the two surfaces, the tailnet gate, health checks, env contract, failure table |
+| `internal/httpapi/llms.txt` | The agent-facing contract served at `/llms.txt`; moves with any route, field or CLI env change |
 | `internal/vault/key.go` + `key_test.go` | Crypto change — the PyNaCl vector is the contract with every consumer |
 | `internal/webui/static/keygen.js` | Panel key generation — the WebCrypto twin of `vault`, byte-identical derivation |
 | `internal/store/store.go` | Schema/query change: every SQL statement lives here, including the cursor and the reaper |
@@ -41,6 +43,9 @@ fleet DNS-01 token), and `PLANNED.md` for the 2026-11-21 ops entries.
 - Schema or retention change → `technical-domain.md` + `migrations/`
 - New panel route → `technical-domain.md` (panel section) + a test that renders it
 - New verification profile or route → `technical-domain.md` (Routes) + `verify.go` / `server.go`
+- New data-plane route, field or CLI env var → `internal/httpapi/llms.txt` +
+  `docs/connecting.md` + `technical-domain.md` + `README.md` (it is the contract
+  agents read from the running host)
 - New stream frame or field → `technical-domain.md` (Routes) + `README.md` + `docs/consumer-guide.md`
 - A bug that cost real time → add it under "Gotchas paid for in blood", with the
   symptom, not just the fix

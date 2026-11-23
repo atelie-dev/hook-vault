@@ -218,8 +218,8 @@ One binary, two `http.ServeMux`, two addresses:
 
 | Listener | Routes | Reachable by |
 |---|---|---|
-| ingest (`:8080`) | `POST /in/{slug}`, `GET /in/{slug}` (Meta handshake), `GET /v1/events`, `GET /v1/me`, `/healthz` | the internet |
-| control plane (`:8081`) | endpoint and key management, statistics, `/v1/events` for operators | nobody but you |
+| ingest (`:8080`) | `POST /in/{slug}`, `GET /in/{slug}` (Meta handshake), `GET /v1/events`, `GET /v1/events/stream`, `GET /v1/me`, `/healthz`, `/llms.txt` | the internet |
+| control plane (`:8081`) | endpoint and key management, statistics, the panel | nobody but you |
 
 The split is a product decision, not a deployment detail: only one of these is
 meant to face the internet, and the binary knows nothing about Caddy, nginx,
@@ -229,6 +229,10 @@ refuses to start without it.
 
 The read API is safe to expose because it can only return ciphertext and it
 requires a token derived from a key the server never sees.
+
+A consumer's view of this topology — which URL to use, how the private surface is
+gated, health checks, and a dev-shell recipe — is in
+[docs/connecting.md](docs/connecting.md).
 
 ## Authentication
 
@@ -301,6 +305,15 @@ See [docs/consumer-guide.md](docs/consumer-guide.md) for decryption snippets.
 
 All ciphertext is **unpadded base64url**. Python and Java need padding added
 before decoding; Node, Go and PHP do not.
+
+### Agent discovery
+
+`GET /llms.txt` returns one markdown document with the routes, the auth model,
+the event shape, the cursor rules, the CLI environment and a dev-shell recipe —
+written for a reader that arrives with no context. It is embedded in the binary
+and rendered with `--public-url`, so it cannot describe routes this version does
+not serve. Point an agent at `<public-url>/llms.txt` instead of at this
+repository.
 
 ### Data plane
 
@@ -454,11 +467,12 @@ scans the event table.
 
 ## Status
 
-v0.2.0 — ingest, verification, sealed storage, cursor read API, retention, key
-management and a control-plane panel with in-browser key generation
+v0.3.0 — ingest, verification, sealed storage, cursor read API, streaming,
+retention, key management, a control-plane panel with in-browser key generation
 (WebCrypto; see [Authentication](#authentication) for what that does and does
-not change). Not yet: consumer-controlled acknowledgement, monthly
-partitioning, in-panel decryption.
+not change), and `/llms.txt`: the connection contract the binary serves to
+people and agents ([connecting](docs/connecting.md)). Not yet:
+consumer-controlled acknowledgement, monthly partitioning, in-panel decryption.
 
 Deliberately out of scope: user accounts (see [Authentication](#authentication)),
 retries, fan-out, transformations, acting as a queue. This is an append-only

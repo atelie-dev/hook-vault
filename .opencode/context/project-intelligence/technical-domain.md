@@ -1,16 +1,17 @@
-<!-- Context: project-intelligence/technical | Priority: critical | Version: 1.3 | Updated: 2026-11-21 -->
+<!-- Context: project-intelligence/technical | Priority: critical | Version: 1.4 | Updated: 2026-11-23 -->
 
 # Technical Domain — hook-vault
 
 **Purpose**: everything a new session needs to continue this service without
 re-deriving it: the contracts, the traps that already cost time, and what is
 deliberately missing.
-**Last Updated**: 2026-11-21
+**Last Updated**: 2026-11-23
 
 ## Quick Reference
 
-**Update Triggers**: schema change | new CLI verb or flag | new panel route | crypto
-change | deployment contract change | a lesson learned the hard way
+**Update Triggers**: schema change | new CLI verb or flag | new panel route | new
+data-plane route or `/llms.txt` content | crypto change | deployment contract
+change | a lesson learned the hard way
 
 ## The service in one paragraph
 
@@ -93,6 +94,11 @@ Cloudflare or Tailscale. `config` defaults admin to loopback and demands
 - `GET /v1/events/stream` — the same feed as SSE: the frame `id` is the cursor
   and `data` is the same DTO. Resume with `?cursor=` or `Last-Event-ID`.
 - `GET /v1/me` (endpoint behind the token + cursor bounds), `GET /healthz`.
+- `GET /llms.txt` — the agent-facing contract: routes, auth, event shape, cursor
+  rules, CLI env and a devenv snippet in one file. Embedded (`go:embed`) and
+  rendered with `--public-url`, on the **data plane only**. It is what an agent
+  pointed at the host reads instead of this repository, so it moves in the same
+  commit as any route, field or env change below.
 
 **Control plane** (`--admin-addr`, panel origin): `/v1/endpoints` (POST, GET),
 `/v1/endpoints/{id}` (GET, PATCH — only `disabled` toggles), `/{id}/keys`
@@ -141,7 +147,7 @@ profiles, `since`, watch). Go has a lint gate (`golangci-lint run ./...`); JS ha
 ## Build & release
 
 - `nix build .#default`, `nix run github:atelie-dev/hook-vault -- <verb>`.
-- Flake `version = "0.1.0"`, ldflags `-s -w -X main.version=…`; consumed by
+- Flake `version = "0.3.0"`, ldflags `-s -w -X main.version=…`; consumed by
   `atelie-server` as a flake input (Go 1.26.10 in nixos-26.05 there).
 - Bump = `nix flake update hook-vault` + commit + `deploy .#sp2-sd-atelie-1`.
   No tags/releases; the input pins a commit.
@@ -153,7 +159,13 @@ profiles, `since`, watch). Go has a lint gate (`golangci-lint run ./...`); JS ha
   endpoints holding events) is planned, today it is SQL, not a supported path.
 - **No retries, fan-out or transformations.** Append-only log; push delivery
   belongs in front (Svix, Hookdeck Outpost).
-- **Read API sits on the data plane**, so public; gate `/v1/*` to the tailnet at Caddy (only `/in/*` must be public) — planned, not done.
+- **Read API sits on the data plane**, so public by design — it can only return
+  ciphertext. The reference deployment (`atelie-server/modules/hook-vault.nix`)
+  puts ingest + reads on `webhooks.atelie.dev.br` and the control plane on the
+  tailnet (`hookvault.svc.atelie.dev.br`, Caddy `client_ip 100.64.0.0/10` behind
+  the Tailscale ACL; the DNS wildcard is public and points at the tailnet IP).
+  Gating `/v1/*` to the tailnet at Caddy is still planned; see
+  `docs/connecting.md` for the consumer's view.
 - **No `LISTEN`/`NOTIFY` for the stream**: in-process wake plus a 1s tick; a
   stalled notify queue could fail an ingest. See `docs/adr/0001-wake-signal.md`.
 - **`--since` is not a compatibility shim**: CLI and server share a version; the CLI validates locally and never filters.
@@ -190,8 +202,10 @@ profiles, `since`, watch). Go has a lint gate (`golangci-lint run ./...`); JS ha
 
 ## Codebase references
 
-**Product/contract**: `README.md` (threat model + API), `docs/consumer-guide.md`
-(decrypt snippets, fetch formats, per-project setup).
+**Product/contract**: `README.md` (threat model + API), `docs/connecting.md`
+(hosts, tailnet gate, health checks, env contract), `docs/consumer-guide.md`
+(decrypt snippets, fetch formats, per-project setup), `internal/httpapi/llms.txt`
+(the same contract as an agent reads it from the running host).
 **Rules**: `AGENTS.md`. **Schema**: `migrations/0001_init.sql`.
 **Runtime config**: `internal/config/config.go` (flags vs `HOOKVAULT_*`).
 **Deployment** (other repo, `atelie-server`): `modules/hook-vault.nix`,

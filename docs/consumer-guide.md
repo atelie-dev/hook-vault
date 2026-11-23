@@ -3,6 +3,9 @@
 Three steps: get the ciphertext, pick the right secret key, open the sealed box.
 The last step has no server in it, and that is the point.
 
+Where to point and how to verify the connection first — hosts, tailnet, health
+checks, dev shell — is in [connecting.md](connecting.md).
+
 ## 1. Read a page
 
 ```bash
@@ -229,20 +232,59 @@ being group/world-readable earns a warning on stderr.
 
 ### Set once per project (devenv / direnv)
 
-Both flags are environment variables too, so a project's dev shell can pre-set
-them and `hook-vault fetch` needs no arguments at all:
+The CLI is a flake package and both settings are environment variables, so a
+project's dev shell can make `hook-vault fetch` argument-free. Two files in the
+consuming repository.
+
+`devenv.yaml`, which pins the CLI (pin a revision instead of following `main`
+when the consumer must not move):
+
+```yaml
+inputs:
+  hook-vault:
+    url: github:atelie-dev/hook-vault
+```
+
+`devenv.nix`:
 
 ```nix
-# devenv.nix — the product repo
 { pkgs, inputs, ... }:
+let
+  hookVault = inputs.hook-vault.packages.${pkgs.stdenv.hostPlatform.system}.default;
+in
 {
-  packages = [ inputs.hook-vault.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+  packages = [ hookVault ];
+
+  # --url pre-set. Point it at the data plane, never at the panel host.
   env.HOOKVAULT_URL = "https://webhooks.atelie.dev.br";
+
+  # env.* is literal: $HOME is not expanded there, so export the path here.
   enterShell = ''
     export HOOKVAULT_KEY_FILE="$HOME/.config/hook-vault/medax.key"
+    if [ ! -r "$HOOKVAULT_KEY_FILE" ]; then
+      echo "hook-vault: no key at $HOOKVAULT_KEY_FILE" >&2
+      echo "  install -d -m 700 ~/.config/hook-vault" >&2
+      echo "  install -m 600 ~/Downloads/hook-vault.key $HOOKVAULT_KEY_FILE" >&2
+    fi
+  '';
+
+  # URL + key + derived token + database, in one command.
+  scripts.hook-vault-check.exec = ''
+    hook-vault fetch --limit=1 --format jsonl >/dev/null
+    echo "hook-vault: $HOOKVAULT_URL ok"
   '';
 }
 ```
+
+```bash
+devenv shell                 # or: echo 'use devenv' > .envrc && direnv allow
+hook-vault-check             # wrong URL or wrong key fails here, with a reason
+hook-vault fetch             # one page; human on a TTY, jsonl in a pipe
+hook-vault fetch --watch --format jsonl --cursor-file .hookvault.cursor
+```
+
+Add the cursor file to `.gitignore`. `--watch` without a starting point attaches
+at the newest event; the one-shot read starts at the oldest still stored.
 
 Keep the key outside the repository, readable only by you:
 
@@ -254,7 +296,9 @@ install -m 600 ~/Downloads/hook-vault.key ~/.config/hook-vault/medax.key
 One key pair is one endpoint, so the file is per project — that is the
 guardrail, not an inconvenience: a project's leaked key exposes that project's
 archive and nothing else. `HOOKVAULT_TOKEN_FILE` exists for contexts that must
-not hold the secret key at all (a CI job that only asserts events arrive).
+not hold the secret key at all (a CI job that only asserts events arrive). Note
+that `hook-vault open` is the one verb that reads `HOOK_VAULT_SECRET` instead of
+a `HOOKVAULT_*` name; in scripts, pass `--secret` and keep one convention.
 
 If your secrets live in a vault that injects environment variables (1Password
 `op run`, direnv with `op inject`, a container secret store), skip the file and

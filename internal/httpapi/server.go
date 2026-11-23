@@ -81,6 +81,7 @@ func (s *Server) DataPlane() http.Handler {
 	mux.HandleFunc("GET /v1/events/stream", s.handleEventsStream)
 	mux.HandleFunc("GET /v1/me", s.handleMe)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /llms.txt", s.handleLLMsTxt)
 	mux.HandleFunc("/", s.notFound)
 	return s.wrap(mux)
 }
