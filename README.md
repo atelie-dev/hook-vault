@@ -503,13 +503,15 @@ scans the event table.
 
 ## Status
 
-v0.4.0 — ingest, verification, sealed storage, cursor read API, streaming,
-retention, key management, a control-plane panel with in-browser key generation
-(WebCrypto; see [Authentication](#authentication) for what that does and does
-not change), `/llms.txt`: the connection contract the binary serves to people
-and agents ([connecting](docs/connecting.md)), and the `HEAD` probe for
-providers that validate a webhook URL before accepting it. Not yet:
-consumer-controlled acknowledgement, monthly partitioning, in-panel decryption.
+v0.5.0 — ingest, verification (HMAC profiles, Stripe, and AWS SNS with its
+certificate signature and subscription confirmation), sealed storage, cursor
+read API, streaming, retention, key management, a control-plane panel with
+in-browser key generation and inline rename (WebCrypto; see
+[Authentication](#authentication) for what that does and does not change),
+`/llms.txt`: the connection contract the binary serves to people and agents
+([connecting](docs/connecting.md)), and the `HEAD` probe for providers that
+validate a webhook URL before accepting it. Not yet: consumer-controlled
+acknowledgement, monthly partitioning, in-panel decryption.
 
 Release notes: [CHANGELOG.md](CHANGELOG.md).
 

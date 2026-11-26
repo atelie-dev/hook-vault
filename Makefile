@@ -1,6 +1,6 @@
 CGO_ENABLED ?= 0
 BIN         ?= bin/hook-vault
-VERSION     ?= 0.4.0-dev
+VERSION     ?= 0.5.0-dev
 
 .PHONY: build test test-integration vet fmt lint clean
 
