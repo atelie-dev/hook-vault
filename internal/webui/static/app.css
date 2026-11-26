@@ -140,6 +140,11 @@ h2 { font-size: 1rem; margin: 1.4rem 0 0.5rem; color: var(--muted); text-transfo
 .endpoint { margin-bottom: 0; padding: 0.9rem 1rem; min-width: 0; /* grid item: shrink below URL max-content */ }
 .endpoint-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .endpoint-name { font-weight: 650; font-size: 1rem; }
+/* Inline rename: the name span becomes this form in place. It takes the row's
+   free width, wraps on 375px, and never pushes the badges off the card. */
+.rename-form { display: flex; align-items: center; gap: 0.4rem; flex: 1 1 14rem; min-width: 0; flex-wrap: wrap; }
+.rename-form input { flex: 1 1 8rem; min-width: 0; }
+.endpoint-head .error { flex-basis: 100%; font-size: 0.8rem; }
 .ingest {
   display: flex;
   align-items: center;

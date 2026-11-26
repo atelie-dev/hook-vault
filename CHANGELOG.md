@@ -11,6 +11,8 @@ file starts here.
   tagged release with a `sha256sums.txt`, so a host without Nix can install by
   unpacking one. `go install github.com/atelie-dev/hook-vault/cmd/hook-vault@latest`
   stays the source route.
+- The panel renames an endpoint in place: the name on the list card becomes a
+  form that saves through the same `PATCH /v1/endpoints/{id}` the CLI uses.
 
 ### Internal
 
