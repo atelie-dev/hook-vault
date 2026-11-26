@@ -76,6 +76,7 @@ func (s *Server) wakeReaders() {
 func (s *Server) DataPlane() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /in/{slug}", s.handleIngest)
+	mux.HandleFunc("HEAD /in/{slug}", s.handleIngestProbe)
 	mux.HandleFunc("GET /in/{slug}", s.handleHandshake)
 	mux.HandleFunc("GET /v1/events", s.handleEvents)
 	mux.HandleFunc("GET /v1/events/stream", s.handleEventsStream)

@@ -78,7 +78,9 @@ Cloudflare or Tailscale. `config` defaults admin to loopback and demands
 ## Routes
 
 **Data plane** (`--ingest-addr`, public):
-- `POST /in/{slug}` ingest; `GET /in/{slug}` handshake (Meta callback check).
+- `POST /in/{slug}` ingest; `HEAD /in/{slug}` provider URL check (200, no body;
+  404/410 for unknown/disabled — Receita Federal's async APIs reject the
+  solicitation if this probe fails); `GET /in/{slug}` handshake (Meta callback check).
   Profiles: `github`, `meta` and `generic-hmac` share one HMAC path
   (`X-Hub-Signature-256`; `generic-hmac` reads `X-HookVault-Signature`), `stripe` has
   its own scheme with a 5-minute tolerance, `none` skips verification.
@@ -187,6 +189,11 @@ profiles, `since`, watch). Go has a lint gate (`golangci-lint run ./...`); JS ha
 
 - **`deriveBits` counts BITS, not bytes.** HKDF must ask for 256 for 32 bytes;
   `32` silently produced 4-byte tokens that would have failed every consumer.
+- **A `GET` pattern also matches `HEAD`.** `HEAD /in/{slug}` reached
+  `handleHandshake` and answered `400 not_a_handshake`, which is what a provider
+  probing the URL (Receita Federal's async APIs) reads as "endpoint unavailable"
+  and rejects the solicitation for. The route silently "exists"; only the
+  explicit `HEAD` pattern makes it answer.
 - **`text/template` resolves functions at PARSE time.** A missing func in the
   func map fails at parse, not execute — hence `panel_parse_test.go`.
 - **Module TDZ kills every listener silently.** `create.html` referenced `form`

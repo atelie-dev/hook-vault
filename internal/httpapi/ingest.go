@@ -124,6 +124,40 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
 }
 
+// handleIngestProbe answers the HEAD that a provider makes before it accepts a
+// webhook URL. Receita Federal's async APIs reject the whole solicitation when
+// this probe does not come back 2xx; see
+// https://docs.receitafederal.gov.br/apuracao-cbs/guiaapiassincrona.html
+//
+// The route has to be explicit: net/http matches a GET pattern against HEAD, so
+// without it the probe lands in handleHandshake and is answered 400. It checks
+// the preconditions ingest checks — the slug exists and is enabled — so a wrong
+// or disabled URL fails when the subscription is opened instead of hours later,
+// when the notification never arrives. It stores nothing and authenticates
+// nothing: the probe carries no credential.
+func (s *Server) handleIngestProbe(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+
+	endpoint, err := s.store.EndpointBySlug(r.Context(), slug)
+	if err != nil {
+		if isNotFound(err) {
+			writeError(w, http.StatusNotFound, "unknown_endpoint", "no endpoint with this slug")
+			return
+		}
+		s.logger.Error("lookup endpoint for probe", "slug", slug, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal", "internal error")
+		return
+	}
+	if endpoint.DisabledAt != nil {
+		writeError(w, http.StatusGone, "endpoint_disabled", "this endpoint is disabled")
+		return
+	}
+
+	// The probe asks one thing: does this address answer? A 200 with no body is
+	// the whole answer.
+	w.WriteHeader(http.StatusOK)
+}
+
 // handleHandshake answers Meta's subscription challenge:
 //
 //	GET /in/{slug}?hub.mode=subscribe&hub.verify_token=…&hub.challenge=…

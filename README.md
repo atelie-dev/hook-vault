@@ -218,7 +218,7 @@ One binary, two `http.ServeMux`, two addresses:
 
 | Listener | Routes | Reachable by |
 |---|---|---|
-| ingest (`:8080`) | `POST /in/{slug}`, `GET /in/{slug}` (Meta handshake), `GET /v1/events`, `GET /v1/events/stream`, `GET /v1/me`, `/healthz`, `/llms.txt` | the internet |
+| ingest (`:8080`) | `POST /in/{slug}`, `HEAD /in/{slug}` (provider URL check), `GET /in/{slug}` (Meta handshake), `GET /v1/events`, `GET /v1/events/stream`, `GET /v1/me`, `/healthz`, `/llms.txt` | the internet |
 | control plane (`:8081`) | endpoint and key management, statistics, the panel | nobody but you |
 
 The split is a product decision, not a deployment detail: only one of these is
@@ -246,6 +246,7 @@ What exists:
 | Surface | Credential |
 |---|---|
 | `POST /in/{slug}` | the provider signature (`X-Hub-Signature-256`, `Stripe-Signature`, …) |
+| `HEAD /in/{slug}` | none by design: the probe carries no credential and proves only that the address answers |
 | `GET /v1/events`, `GET /v1/me` | a bearer token derived from the endpoint's secret key |
 | control plane | one `--admin-token`, a service credential, not a person |
 
@@ -320,6 +321,7 @@ repository.
 | Method | Path | Notes |
 |---|---|---|
 | `POST` | `/in/{slug}` | the provider endpoint; `X-HookVault-Event-Id` in the response |
+| `HEAD` | `/in/{slug}` | the availability check some providers make before accepting a webhook URL (Receita Federal's async APIs); `200` and no body, `404` or `410` if the slug is unknown or disabled |
 | `GET` | `/in/{slug}?hub.mode=subscribe&hub.verify_token=…&hub.challenge=…` | Meta subscription handshake, echoes the challenge |
 | `GET` | `/v1/events?cursor=&limit=&since=&include_rejected=` | bearer token; `limit` ≤ 1000, default 100; `since` is a duration (`10m`, `2hours`) or RFC3339, resolved against the database clock |
 | `GET` | `/v1/events/stream?cursor=&include_rejected=` | the same feed as server-sent events; the frame `id` is the cursor |
@@ -467,12 +469,15 @@ scans the event table.
 
 ## Status
 
-v0.3.0 — ingest, verification, sealed storage, cursor read API, streaming,
+v0.4.0 — ingest, verification, sealed storage, cursor read API, streaming,
 retention, key management, a control-plane panel with in-browser key generation
 (WebCrypto; see [Authentication](#authentication) for what that does and does
-not change), and `/llms.txt`: the connection contract the binary serves to
-people and agents ([connecting](docs/connecting.md)). Not yet:
+not change), `/llms.txt`: the connection contract the binary serves to people
+and agents ([connecting](docs/connecting.md)), and the `HEAD` probe for
+providers that validate a webhook URL before accepting it. Not yet:
 consumer-controlled acknowledgement, monthly partitioning, in-panel decryption.
+
+Release notes: [CHANGELOG.md](CHANGELOG.md).
 
 Deliberately out of scope: user accounts (see [Authentication](#authentication)),
 retries, fan-out, transformations, acting as a queue. This is an append-only
