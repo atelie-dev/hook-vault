@@ -83,7 +83,9 @@ Cloudflare or Tailscale. `config` defaults admin to loopback and demands
   solicitation if this probe fails); `GET /in/{slug}` handshake (Meta callback check).
   Profiles: `github`, `meta` and `generic-hmac` share one HMAC path
   (`X-Hub-Signature-256`; `generic-hmac` reads `X-HookVault-Signature`), `stripe` has
-  its own scheme with a 5-minute tolerance, `none` skips verification.
+  its own scheme with a 5-minute tolerance, `sns` verifies an RSA signature over
+  SNS's canonical envelope (SHA1 for `SignatureVersion` 1, SHA256 for 2) against
+  a certificate fetched from an allowlisted AWS host, `none` skips verification.
 - `GET /v1/events` — bearer token derived from the key; the token *is* the
   endpoint identity, so there is no endpoint id in the path. Params `cursor`
   (`id > cursor`, opaque), `limit` (1–1000, default 100), `since` (`10m`,
@@ -169,6 +171,17 @@ profiles, `since`, watch). Go has a lint gate (`golangci-lint run ./...`); JS ha
   endpoints holding events) is planned, today it is SQL, not a supported path.
 - **No retries, fan-out or transformations.** Append-only log; push delivery
   belongs in front (Svix, Hookdeck Outpost).
+- **SNS is the exception that makes two outbound calls** (`internal/snssig`):
+  the signing certificate (cached for 6h) and the subscription confirmation.
+  Both are https on `sns.<region>.amazonaws.com` only, refuse redirects and have
+  short timeouts; the certificate chain is not pinned to a bundled AWS root
+  because TLS already authenticated an allowlisted host. Don't turn that into a
+  system-root lookup without a story for older SNS certificates.
+- **`sns_topics` is the topic identity, not the signature.** A valid signature
+  proves AWS sent the message; any account can subscribe this endpoint to its
+  own topic and sign valid messages. An empty list means any topic — that is
+  what makes `sns_auto_confirm` without a list possible, and it should stay a
+  deliberate choice, not a default.
 - **Read API sits on the data plane**, so public by design — it can only return
   ciphertext. The reference deployment (`atelie-server/modules/hook-vault.nix`)
   puts ingest + reads on `webhooks.atelie.dev.br` and the control plane on the

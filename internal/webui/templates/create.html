@@ -15,10 +15,13 @@
       <option value="meta">meta (Facebook / WhatsApp / Instagram) — X-Hub-Signature-256 + hub.challenge handshake</option>
       <option value="stripe">stripe — Stripe-Signature (timestamped)</option>
       <option value="generic-hmac">generic-hmac — X-HookVault-Signature</option>
+      <option value="sns">sns (AWS SNS) — RSA signature + subscription confirmation</option>
     </select>
-    <label>Provider secret</label>
-    <input name="verify_secret" autocomplete="off" placeholder="the secret you also set at the provider">
-    <p class="hint">Stored write-only; it never comes back in a response. Required unless the profile is none.</p>
+    <div id="verify-secret-row">
+      <label>Provider secret</label>
+      <input name="verify_secret" autocomplete="off" placeholder="the secret you also set at the provider">
+      <p class="hint">Stored write-only; it never comes back in a response. Required unless the profile is none.</p>
+    </div>
     <div id="verify-token-row" class="hidden">
       <label>Verify token (Meta handshake)</label>
       <input name="verify_token" autocomplete="off" placeholder="any string you invent — the same goes in the Meta dashboard">
@@ -26,6 +29,29 @@
         Meta signs payloads with the <b>App Secret</b> (Settings → Basic) above,
         and checks the subscription with this token: it must match the
         <b>Verify Token</b> field of the webhook config in the Meta dashboard.
+      </p>
+    </div>
+    <div id="sns-row" class="hidden">
+      <label>Subscription confirmation</label>
+      <select name="sns_confirm">
+        <option value="manual">manual — keep the confirmation as evidence and confirm it yourself (SNS drops the request after 3 days)</option>
+        <option value="auto">automatic — confirm any topic whose signature verifies</option>
+        <option value="allowlist">automatic, only for the topics listed below</option>
+      </select>
+      <div id="sns-topics-row" class="hidden">
+        <label>Allowed topic ARNs (one per line)</label>
+        <textarea name="sns_topics" rows="3" placeholder="arn:aws:sns:sa-east-1:123456789012:my-topic"></textarea>
+        <p class="hint">
+          A valid signature proves AWS sent the message, not that the topic is
+          yours: a message from any other topic is refused and kept as evidence.
+          At least one ARN is required here — to accept any topic, pick the
+          automatic mode above instead.
+        </p>
+      </div>
+      <p class="hint">
+        SNS delivers nothing until the endpoint fetches the confirmation's
+        <code>SubscribeURL</code>. Automatic does that after the signature
+        verifies; the event is stored either way.
       </p>
     </div>
   </fieldset>
@@ -122,12 +148,21 @@ for (const radio of modeRadios) {
   });
 }
 
-// The verify token only exists in the Meta flow.
+// Each profile shows exactly what it needs: the Meta verify token, or the SNS
+// confirmation policy and its topic list.
 const profile = form.querySelector('select[name="verify"]');
-const toggleTokenRow = () =>
+const snsConfirm = form.querySelector('select[name="sns_confirm"]');
+const toggleProfileRows = () => {
   profile.value === 'meta' ? show('verify-token-row') : hide('verify-token-row');
-profile.addEventListener('change', toggleTokenRow);
-toggleTokenRow();
+  profile.value === 'none' || profile.value === 'sns'
+    ? hide('verify-secret-row')
+    : show('verify-secret-row');
+  profile.value === 'sns' ? show('sns-row') : hide('sns-row');
+  snsConfirm.value === 'allowlist' ? show('sns-topics-row') : hide('sns-topics-row');
+};
+profile.addEventListener('change', toggleProfileRows);
+snsConfirm.addEventListener('change', toggleProfileRows);
+toggleProfileRows();
 
 // A browser without X25519 would fail on submit with no visible error, so the
 // form switches to the paste path and says so.
@@ -143,7 +178,7 @@ if (!(await api.supported())) {
     'Gere offline com `hook-vault keygen` e cole public_key + token_sha256 aqui.';
   const paste = document.getElementById('paste-fields');
   paste.classList.remove('hidden');
-  toggleTokenRow();
+  toggleProfileRows();
 }
 
 form.addEventListener('submit', async (event) => {
@@ -162,9 +197,23 @@ form.addEventListener('submit', async (event) => {
     retention_days: Number(fields.get('retention_days')) || undefined,
     max_bytes: maxSize > 0 ? maxSize * maxUnit : undefined,
   };
-  if (fields.get('verify') !== 'none') body.verify_secret = fields.get('verify_secret');
+  if (fields.get('verify') !== 'none' && fields.get('verify') !== 'sns') {
+    body.verify_secret = fields.get('verify_secret');
+  }
   if (fields.get('verify') === 'meta' && fields.get('verify_token')) {
     body.verify_token = fields.get('verify_token');
+  }
+  if (fields.get('verify') === 'sns') {
+    const policy = fields.get('sns_confirm');
+    body.sns_auto_confirm = policy !== 'manual';
+    body.sns_topics = policy === 'allowlist'
+      ? String(fields.get('sns_topics') || '').split('\n').map((line) => line.trim()).filter(Boolean)
+      : [];
+    if (policy === 'allowlist' && body.sns_topics.length === 0) {
+      error.textContent = 'invalid_sns: list at least one topic ARN, or choose the automatic mode';
+      show('create-error');
+      return;
+    }
   }
 
   let rendered;

@@ -60,9 +60,13 @@ type Endpoint struct {
 	Verify        string
 	VerifySecret  *string
 	VerifyToken   *string
-	CreatedAt     time.Time
-	DisabledAt    *time.Time
-	ActiveKID     *string
+	// SNS only: confirm a subscription confirmation automatically, and the
+	// topic ARNs this endpoint accepts (empty means any).
+	SNSAutoConfirm bool
+	SNSTopics      []string
+	CreatedAt      time.Time
+	DisabledAt     *time.Time
+	ActiveKID      *string
 }
 
 // Key is one recipient key pair registered on an endpoint. The server knows
@@ -112,6 +116,7 @@ const endpointSelect = `
 	select e.id::text, e.slug, e.name, e.retention_days, e.max_bytes,
 	       e.bytes_used, e.events_used, e.evicted_events,
 	       e.verify, e.verify_secret, e.verify_token,
+	       e.sns_auto_confirm, e.sns_topics,
 	       e.created_at, e.disabled_at,
 	       (select k.kid from endpoint_key k
 	         where k.endpoint_id = e.id and k.revoked_at is null
@@ -128,6 +133,7 @@ func scanEndpoint(row rowScanner) (Endpoint, error) {
 	err := row.Scan(&ep.ID, &ep.Slug, &ep.Name, &ep.RetentionDays, &ep.MaxBytes,
 		&ep.BytesUsed, &ep.EventsUsed, &ep.EvictedEvents,
 		&ep.Verify, &ep.VerifySecret, &ep.VerifyToken,
+		&ep.SNSAutoConfirm, &ep.SNSTopics,
 		&ep.CreatedAt, &ep.DisabledAt, &ep.ActiveKID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Endpoint{}, ErrNotFound
@@ -141,13 +147,23 @@ func scanEndpoint(row rowScanner) (Endpoint, error) {
 // CreateEndpointParams describes a new endpoint. An empty Slug gets a
 // generated one.
 type CreateEndpointParams struct {
-	Slug          string
-	Name          string
-	RetentionDays *int
-	MaxBytes      *int64
-	Verify        string
-	VerifySecret  *string
-	VerifyToken   *string
+	Slug           string
+	Name           string
+	RetentionDays  *int
+	MaxBytes       *int64
+	Verify         string
+	VerifySecret   *string
+	VerifyToken    *string
+	SNSAutoConfirm bool
+	SNSTopics      []string
+}
+
+// topicsOrEmpty keeps a nil slice from reaching a NOT NULL column.
+func topicsOrEmpty(topics []string) []string {
+	if topics == nil {
+		return []string{}
+	}
+	return topics
 }
 
 // CreateEndpoint inserts an endpoint. A caller that let the database default
@@ -168,10 +184,12 @@ func (s *Store) CreateEndpoint(ctx context.Context, p CreateEndpointParams) (End
 
 	var id string
 	err := s.pool.QueryRow(ctx, `
-		insert into endpoint (slug, name, retention_days, max_bytes, verify, verify_secret, verify_token)
-		values ($1, $2, $3, $4, $5, $6, $7)
+		insert into endpoint (slug, name, retention_days, max_bytes, verify, verify_secret, verify_token,
+		                      sns_auto_confirm, sns_topics)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		returning id::text`,
 		slug, p.Name, p.RetentionDays, p.MaxBytes, verify, p.VerifySecret, p.VerifyToken,
+		p.SNSAutoConfirm, topicsOrEmpty(p.SNSTopics),
 	).Scan(&id)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -203,15 +221,17 @@ func (s *Store) CreateEndpointWithKey(ctx context.Context, p CreateEndpointParam
 	var id string
 	err := s.pool.QueryRow(ctx, `
 		with ep as (
-			insert into endpoint (slug, name, retention_days, max_bytes, verify, verify_secret, verify_token)
-			values ($1, $2, $3, $4, $5, $6, $7)
+			insert into endpoint (slug, name, retention_days, max_bytes, verify, verify_secret, verify_token,
+			                      sns_auto_confirm, sns_topics)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 			returning id
 		), key as (
 			insert into endpoint_key (endpoint_id, kid, public_key, token_sha256)
-			select id, $8, $9, $10 from ep
+			select id, $10, $11, $12 from ep
 		)
 		select id::text from ep`,
 		slug, p.Name, p.RetentionDays, p.MaxBytes, verify, p.VerifySecret, p.VerifyToken,
+		p.SNSAutoConfirm, topicsOrEmpty(p.SNSTopics),
 		kid, publicKey, tokenSHA256,
 	).Scan(&id)
 	if err != nil {
@@ -263,17 +283,23 @@ func (s *Store) ListEndpoints(ctx context.Context) ([]Endpoint, error) {
 // RetentionDays and MaxBytes use 0 to clear the limit and nil to leave it
 // untouched; VerifySecret and VerifyToken use "" to clear.
 type EndpointPatch struct {
-	Name          *string
-	RetentionDays *int
-	MaxBytes      *int64
-	Verify        *string
-	VerifySecret  *string
-	VerifyToken   *string
-	Disabled      *bool
+	Name           *string
+	RetentionDays  *int
+	MaxBytes       *int64
+	Verify         *string
+	VerifySecret   *string
+	VerifyToken    *string
+	SNSAutoConfirm *bool
+	SNSTopics      *[]string
+	Disabled       *bool
 }
 
 // UpdateEndpoint applies a patch and returns the stored row.
 func (s *Store) UpdateEndpoint(ctx context.Context, id string, p EndpointPatch) (Endpoint, error) {
+	var topics []string
+	if p.SNSTopics != nil {
+		topics = topicsOrEmpty(*p.SNSTopics)
+	}
 	var updated string
 	err := s.pool.QueryRow(ctx, `
 		update endpoint e set
@@ -287,11 +313,14 @@ func (s *Store) UpdateEndpoint(ctx context.Context, id string, p EndpointPatch) 
 			                     when $6 = '' then null else $6 end,
 			verify_token = case when $7::text is null then e.verify_token
 			                    when $7 = '' then null else $7 end,
-			disabled_at = case when $8::boolean is null then e.disabled_at
-			                   when $8 then coalesce(e.disabled_at, now()) else null end
+			sns_auto_confirm = coalesce($8, e.sns_auto_confirm),
+			sns_topics = case when $9::text[] is null then e.sns_topics else $9 end,
+			disabled_at = case when $10::boolean is null then e.disabled_at
+			                   when $10 then coalesce(e.disabled_at, now()) else null end
 		where e.id = $1::uuid
 		returning e.id::text`,
-		id, p.Name, p.RetentionDays, p.MaxBytes, p.Verify, p.VerifySecret, p.VerifyToken, p.Disabled,
+		id, p.Name, p.RetentionDays, p.MaxBytes, p.Verify, p.VerifySecret, p.VerifyToken,
+		p.SNSAutoConfirm, topics, p.Disabled,
 	).Scan(&updated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Endpoint{}, ErrNotFound
@@ -392,7 +421,8 @@ func (s *Store) EndpointByTokenHash(ctx context.Context, hash []byte) (Endpoint,
 		select k.endpoint_id::text, k.kid, k.public_key, k.token_sha256, k.created_at, k.revoked_at,
 		       e.id::text, e.slug, e.name, e.retention_days, e.max_bytes,
 		       e.bytes_used, e.events_used, e.evicted_events,
-		       e.verify, e.verify_secret, e.verify_token, e.created_at, e.disabled_at
+		       e.verify, e.verify_secret, e.verify_token,
+		       e.sns_auto_confirm, e.sns_topics, e.created_at, e.disabled_at
 		  from endpoint_key k
 		  join endpoint e on e.id = k.endpoint_id
 		 where k.token_sha256 = $1 and k.revoked_at is null and e.disabled_at is null`
@@ -403,7 +433,8 @@ func (s *Store) EndpointByTokenHash(ctx context.Context, hash []byte) (Endpoint,
 		&k.EndpointID, &k.KID, &k.PublicKey, &k.TokenSHA256, &k.CreatedAt, &k.RevokedAt,
 		&ep.ID, &ep.Slug, &ep.Name, &ep.RetentionDays, &ep.MaxBytes,
 		&ep.BytesUsed, &ep.EventsUsed, &ep.EvictedEvents,
-		&ep.Verify, &ep.VerifySecret, &ep.VerifyToken, &ep.CreatedAt, &ep.DisabledAt,
+		&ep.Verify, &ep.VerifySecret, &ep.VerifyToken,
+		&ep.SNSAutoConfirm, &ep.SNSTopics, &ep.CreatedAt, &ep.DisabledAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Endpoint{}, Key{}, ErrNotFound

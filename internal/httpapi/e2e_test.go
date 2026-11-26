@@ -34,6 +34,13 @@ import (
 // care about.
 func newHarness(t *testing.T) (*httptest.Server, *httptest.Server, *store.Store) {
 	t.Helper()
+	return newHarnessWith(t, httpapi.Options{})
+}
+
+// newHarnessWith lets a test inject the seams the server does not default in
+// production: today the SNS certificate fetcher and subscription confirmer.
+func newHarnessWith(t *testing.T, options httpapi.Options) (*httptest.Server, *httptest.Server, *store.Store) {
+	t.Helper()
 
 	dsn := os.Getenv("HOOKVAULT_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -60,12 +67,11 @@ func newHarness(t *testing.T) (*httptest.Server, *httptest.Server, *store.Store)
 		logOut = os.Stderr
 	}
 	logger := slog.New(slog.NewTextHandler(logOut, nil))
-	api := httpapi.New(httpapi.Options{
-		Store:        st,
-		MaxBodyBytes: 1 << 20,
-		ReadLag:      0,
-		Logger:       logger,
-	})
+
+	options.Store = st
+	options.MaxBodyBytes = 1 << 20
+	options.Logger = logger
+	api := httpapi.New(options)
 
 	dataPlane := httptest.NewServer(api.DataPlane())
 	controlPlane := httptest.NewServer(api.ControlPlane())
@@ -79,17 +85,19 @@ func newHarness(t *testing.T) (*httptest.Server, *httptest.Server, *store.Store)
 
 type endpointView struct {
 	Endpoint struct {
-		ID            string  `json:"id"`
-		Slug          string  `json:"slug"`
-		Name          string  `json:"name"`
-		IngestURL     string  `json:"ingest_url"`
-		RetentionDays *int    `json:"retention_days"`
-		MaxBytes      *int64  `json:"max_bytes"`
-		BytesUsed     int64   `json:"bytes_used"`
-		EventsUsed    int64   `json:"events_used"`
-		EvictedEvents int64   `json:"evicted_events"`
-		Verify        string  `json:"verify"`
-		ActiveKID     *string `json:"active_kid"`
+		ID             string   `json:"id"`
+		Slug           string   `json:"slug"`
+		Name           string   `json:"name"`
+		IngestURL      string   `json:"ingest_url"`
+		RetentionDays  *int     `json:"retention_days"`
+		MaxBytes       *int64   `json:"max_bytes"`
+		BytesUsed      int64    `json:"bytes_used"`
+		EventsUsed     int64    `json:"events_used"`
+		EvictedEvents  int64    `json:"evicted_events"`
+		Verify         string   `json:"verify"`
+		SNSAutoConfirm bool     `json:"sns_auto_confirm"`
+		SNSTopics      []string `json:"sns_topics"`
+		ActiveKID      *string  `json:"active_kid"`
 	} `json:"endpoint"`
 	Key struct {
 		KID       string `json:"kid"`
