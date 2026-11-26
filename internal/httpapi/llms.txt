@@ -17,6 +17,7 @@ Base URL: {{base}}
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/in/{slug}` | provider webhook ingest; answers `X-HookVault-Event-Id` |
+| HEAD | `/in/{slug}` | the availability check a provider makes before accepting the URL: `200`, no body, nothing stored |
 | GET | `/in/{slug}?hub.mode=subscribe&hub.verify_token=…&hub.challenge=…` | Meta subscription handshake |
 | GET | `/v1/events` | read a page of ciphertext (bearer token) |
 | GET | `/v1/events/stream` | the same feed as server-sent events |

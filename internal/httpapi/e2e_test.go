@@ -273,6 +273,70 @@ func TestIngestSealReadAndDecrypt(t *testing.T) {
 	}
 }
 
+// TestIngestProbeAnswersProviderURLCheck covers the HEAD a provider makes before
+// it accepts a webhook URL (Receita Federal's async APIs reject the solicitation
+// when it fails). net/http matches a GET pattern against HEAD, so a missing HEAD
+// route here silently answers the Meta handshake's 400 instead.
+func TestIngestProbeAnswersProviderURLCheck(t *testing.T) {
+	dataPlane, controlPlane, _ := newHarness(t)
+
+	key, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	created := createEndpoint(t, controlPlane.URL, key, map[string]any{"verify": "none"})
+	ingestURL := dataPlane.URL + "/in/" + created.Endpoint.Slug
+
+	status, body, header := do(t, http.MethodHead, ingestURL, nil, nil)
+	if status != http.StatusOK {
+		t.Fatalf("probe: status %d, want 200", status)
+	}
+	if len(body) != 0 {
+		t.Fatalf("probe body %q, want empty", body)
+	}
+	if got := header.Get("Content-Type"); strings.Contains(got, "json") {
+		t.Fatalf("probe answered %q; that is the handshake, not the probe", got)
+	}
+
+	// The probe is unauthenticated and runs once per solicitation: it must leave
+	// no trace in the log.
+	status, body, _ = do(t, http.MethodGet, dataPlane.URL+"/v1/events", nil,
+		map[string]string{"Authorization": "Bearer " + key.Token})
+	if status != http.StatusOK {
+		t.Fatalf("read: status %d, body %s", status, body)
+	}
+	var page pageView
+	if err := json.Unmarshal(body, &page); err != nil {
+		t.Fatalf("decode page: %v", err)
+	}
+	if len(page.Events) != 0 {
+		t.Fatalf("the probe stored %d events, want 0", len(page.Events))
+	}
+
+	// A wrong URL has to fail now, while the subscription is being opened.
+	status, _, _ = do(t, http.MethodHead, dataPlane.URL+"/in/does-not-exist", nil, nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("probe on unknown slug: status %d, want 404", status)
+	}
+
+	// The handshake keeps its own 400 for a bare GET.
+	status, _, _ = do(t, http.MethodGet, ingestURL, nil, nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("bare GET: status %d, want 400", status)
+	}
+
+	patch, _ := json.Marshal(map[string]any{"disabled": true})
+	status, body, _ = do(t, http.MethodPatch, controlPlane.URL+"/v1/endpoints/"+created.Endpoint.ID,
+		patch, map[string]string{"Content-Type": "application/json"})
+	if status != http.StatusOK {
+		t.Fatalf("disable endpoint: status %d, body %s", status, body)
+	}
+	status, _, _ = do(t, http.MethodHead, ingestURL, nil, nil)
+	if status != http.StatusGone {
+		t.Fatalf("probe on disabled endpoint: status %d, want 410", status)
+	}
+}
+
 func TestCursorPaginationWalksEveryEventOnce(t *testing.T) {
 	dataPlane, controlPlane, _ := newHarness(t)
 

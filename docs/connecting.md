@@ -85,6 +85,22 @@ With the CLI, the same check without curl:
 hook-vault fetch --limit=1 --format jsonl >/dev/null && echo ok
 ```
 
+## The URL check a provider makes
+
+Some providers probe a webhook URL with `HEAD` before they accept it — Receita
+Federal's async APIs do, and reject the whole solicitation when it fails. The
+probe needs no credential and is the same URL the notifications arrive on:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' -I https://webhooks.atelie.dev.br/in/<slug>
+# 200
+```
+
+`404` means the slug is wrong, `410` that the endpoint is disabled — both are
+worth catching here rather than hours later, when the notification never comes.
+`400` would be the Meta handshake answering instead of the probe, which no
+current build does.
+
 ## Credentials
 
 One key pair is one endpoint. Put a project's key outside its repository:
