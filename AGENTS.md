@@ -23,6 +23,23 @@ Integration tests **drop and recreate the public schema**. Never point
 
 `nix develop` provides Go, PostgreSQL 18, golangci-lint, jq and curl.
 
+## CI and releases
+
+`.github/workflows/ci.yml` runs the gates above on every pull request: lint at
+the golangci-lint version the workflow pins, build/vet/unit tests, the
+integration suite against a `postgres:18` service (TCP, so not the unix socket a
+local run uses), and `nix build`. That last one is there because consumers build
+this flake: a stale `vendorHash` or a raised `go` directive has to fail here, not
+at deploy time.
+
+`.github/workflows/release.yml` builds linux/darwin × amd64/arm64 with
+`CGO_ENABLED=0`, attaches `sha256sums.txt`, and uses the `CHANGELOG.md` section
+for that version as the release notes. It triggers on a `v*` tag push;
+`workflow_dispatch` re-publishes an existing tag. Before building it refuses a
+tag where `flake.nix`, the `-dev` line in `cmd/hook-vault/main.go` and the
+changelog disagree — so cutting a release is: bump those three, commit, tag
+`vX.Y.Z`, push the tag.
+
 ## Invariants — breaking these is a security bug, not a refactor
 
 1. **The server never holds anything that can decrypt.** The private key arrives
