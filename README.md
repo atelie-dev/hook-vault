@@ -47,9 +47,15 @@ a second consumer access, and rotate a key.
 
 ### Start the service
 
+Prebuilt static binaries for linux and macOS (amd64, arm64) are attached to each
+[release](https://github.com/atelie-dev/hook-vault/releases) with a
+`sha256sums.txt`; there is no cgo and no libsodium, so unpacking one is the whole
+install.
+
+From source, with Go 1.26+ (dictated by the dependencies, not by the code) and
+PostgreSQL 18+ (the cursor is the native `uuidv7()`):
+
 ```bash
-# Go 1.26+ to build from source (dictated by the dependencies, not by the code).
-# PostgreSQL 18+ is required: the cursor is the native uuidv7().
 go build -o bin/hook-vault ./cmd/hook-vault
 
 bin/hook-vault serve \

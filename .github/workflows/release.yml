@@ -1,0 +1,144 @@
+name: release
+
+# A pushed tag (v0.4.0) publishes the release; workflow_dispatch re-publishes an
+# existing tag, which is how a release is made for a tag cut before this file
+# existed.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish, e.g. v0.4.0"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      # The tag is the release; flake.nix is the version every consumer builds,
+      # CHANGELOG.md is the notes and main.go is what a `go build` reports. A
+      # release where they disagree is a bug in the release, not in the code.
+      - id: check
+        name: tag, flake.nix, main.go and CHANGELOG.md must agree
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          flake=$(sed -n 's/^[[:space:]]*version = "\([0-9][^"]*\)";$/\1/p' flake.nix)
+          if [ "$version" != "$flake" ]; then
+            echo "::error::tag $TAG does not match flake.nix version '$flake'"
+            exit 1
+          fi
+          if ! grep -qx "var version = \"$version-dev\"" cmd/hook-vault/main.go; then
+            echo "::error::cmd/hook-vault/main.go does not carry version \"$version-dev\""
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$version]' section"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-go@v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          # No cgo, no libsodium, no shared libraries: one static file that runs
+          # on any kernel of its architecture. The server needs no libsodium
+          # because the sealed box is implemented in internal/vault.
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X main.version=$VERSION" \
+            -o hook-vault ./cmd/hook-vault
+          name="hook-vault_${VERSION}_${GOOS}_${GOARCH}"
+          tar -czf "$name.tar.gz" hook-vault LICENSE README.md
+      - name: smoke test on the runner's own platform
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: test "$(./hook-vault version)" = "$VERSION"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: hook-vault_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: hook-vault_*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - name: assemble checksums and notes
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum hook-vault_*.tar.gz > sha256sums.txt)
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { inside = 1; next }
+            inside && /^## \[/ { exit }
+            inside { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::the CHANGELOG.md section for $VERSION is empty"
+            exit 1
+          fi
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Re-running is normal: a fixed runner or a re-dispatch must be able
+            # to replace the assets instead of failing on "already exists".
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" --title "hook-vault $VERSION" --notes-file notes.md
+          else
+            gh release create "$TAG" --verify-tag \
+              --title "hook-vault $VERSION" \
+              --notes-file notes.md \
+              dist/*
+          fi
