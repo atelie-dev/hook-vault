@@ -262,3 +262,63 @@ func TestPanelOffersEveryVerifyProfile(t *testing.T) {
 		}
 	}
 }
+
+// Renaming is a rendering of the API, not a second write path: the card sends
+// the PATCH the CLI sends, authenticated by the session cookie.
+func TestPanelRenameSendsTheAPIPatch(t *testing.T) {
+	control := newPanelHarness(t, "topsecret")
+
+	_, _, loginHeaders := request(t, panelClient, http.MethodPost, control.URL+"/login", "", "token=topsecret")
+	cookie := strings.SplitN(loginHeaders.Get("Set-Cookie"), ";", 2)[0]
+	if !strings.HasPrefix(cookie, "hookvault_admin=") {
+		t.Fatalf("login did not issue the session cookie: %q", loginHeaders.Get("Set-Cookie"))
+	}
+
+	key, err := vault.Generate()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	create, _ := json.Marshal(map[string]any{
+		"name":         "github prod",
+		"public_key":   vault.EncodePublic(key.Public[:]),
+		"token_sha256": hex.EncodeToString(vault.HashToken(key.Token)),
+		"verify":       "none",
+	})
+	status, body, _ := do(t, http.MethodPost, control.URL+"/v1/endpoints", create,
+		map[string]string{"Content-Type": "application/json", "Cookie": cookie})
+	if status != http.StatusCreated {
+		t.Fatalf("create endpoint: status %d, body %s", status, body)
+	}
+	var created endpointView
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatalf("decode endpoint: %v", err)
+	}
+
+	status, page, _ := request(t, panelClient, http.MethodGet, control.URL+"/", cookie, "")
+	if status != http.StatusOK {
+		t.Fatalf("panel: status %d", status)
+	}
+	if !strings.Contains(page, `data-rename="`+created.Endpoint.ID+`"`) {
+		t.Fatal("endpoint card has no rename control")
+	}
+
+	patch, _ := json.Marshal(map[string]any{"name": "receita cbs"})
+	status, body, _ = do(t, http.MethodPatch, control.URL+"/v1/endpoints/"+created.Endpoint.ID, patch,
+		map[string]string{"Content-Type": "application/json", "Cookie": cookie})
+	if status != http.StatusOK || !strings.Contains(string(body), "receita cbs") {
+		t.Fatalf("rename: status %d, body %s", status, body)
+	}
+
+	status, page, _ = request(t, panelClient, http.MethodGet, control.URL+"/", cookie, "")
+	if status != http.StatusOK || !strings.Contains(page, "receita cbs") {
+		t.Fatalf("panel does not show the new name: status %d", status)
+	}
+
+	// A blank name is the handler's 422, which the form shows inline.
+	blank, _ := json.Marshal(map[string]any{"name": "   "})
+	status, body, _ = do(t, http.MethodPatch, control.URL+"/v1/endpoints/"+created.Endpoint.ID, blank,
+		map[string]string{"Content-Type": "application/json", "Cookie": cookie})
+	if status != http.StatusUnprocessableEntity || !strings.Contains(string(body), "invalid_name") {
+		t.Fatalf("blank rename: status %d, body %s", status, body)
+	}
+}

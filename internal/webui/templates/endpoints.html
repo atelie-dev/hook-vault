@@ -9,7 +9,8 @@
   {{range .Endpoints}}
   <div class="card endpoint">
     <div class="endpoint-head">
-      <span class="endpoint-name">{{.Name}}</span>
+      <span class="endpoint-name" data-name>{{.Name}}</span>
+      <button class="small" type="button" data-rename="{{.ID}}" title="rename this endpoint">rename</button>
       {{if .DisabledAt}}<span class="badge err">disabled</span>{{end}}
       <span class="badge">{{.Verify}}</span>
     </div>
@@ -51,6 +52,69 @@
     const old = btn.textContent;
     btn.textContent = 'copied';
     setTimeout(() => { btn.textContent = old; }, 1200);
+  });
+
+  // Rename is inline: the name span becomes a form, so a typo never costs a
+  // page load and the list keeps its scan. It sends the same PATCH the CLI
+  // sends — the session cookie authenticates it, and SameSite=Strict keeps a
+  // cross-site form from riding along.
+  const renameEndpoint = async (id, name) => {
+    const res = await fetch(`/v1/endpoints/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.message || `request failed (${res.status})`);
+    return body.endpoint.name;
+  };
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-rename]');
+    if (!btn) return;
+    const head = btn.closest('.endpoint-head');
+    if (!head || head.querySelector('.rename-form')) return;
+    const label = head.querySelector('[data-name]');
+    if (!label) return;
+
+    const form = document.createElement('form');
+    form.className = 'rename-form';
+    form.innerHTML = '<input name="name" maxlength="200" required aria-label="endpoint name">'
+      + '<button class="small primary" type="submit">save</button>'
+      + '<button class="small" type="button" data-rename-cancel>cancel</button>';
+    const input = form.querySelector('input');
+    const error = document.createElement('span');
+    error.className = 'error hidden';
+
+    label.classList.add('hidden');
+    btn.classList.add('hidden');
+    head.insertBefore(form, label);
+    head.insertBefore(error, label);
+    input.value = label.textContent;
+    input.focus();
+    input.select();
+
+    const restore = (name) => {
+      if (name !== undefined) label.textContent = name;
+      form.remove();
+      error.remove();
+      label.classList.remove('hidden');
+      btn.classList.remove('hidden');
+    };
+
+    form.querySelector('[data-rename-cancel]').addEventListener('click', () => restore());
+    input.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') restore(); });
+    form.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const name = input.value.trim();
+      if (!name) { input.focus(); return; }
+      try {
+        restore(await renameEndpoint(btn.dataset.rename, name));
+      } catch (err) {
+        error.textContent = err.message;
+        error.classList.remove('hidden');
+      }
+    });
   });
 </script>
 {{end}}

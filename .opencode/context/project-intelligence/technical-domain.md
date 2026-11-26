@@ -132,6 +132,9 @@ unique index on `token_sha256`), `open` (single ciphertext), and `fetch`:
 - Key generation runs **in the browser** (WebCrypto X25519 + HKDF, zero vendored
   JS); the form always offers the paste-`public_key`+`token_sha256` path from
   `hook-vault keygen`, because a panel is only as trustworthy as its own code.
+- Renaming is inline on the list card: the name span becomes a form that sends
+  the same `PATCH /v1/endpoints/{id}` the CLI sends, authenticated by the session
+  cookie. The panel never gets a second write path.
 
 ## Testing
 
@@ -149,10 +152,15 @@ profiles, `since`, watch). Go has a lint gate (`golangci-lint run ./...`); JS ha
 ## Build & release
 
 - `nix build .#default`, `nix run github:atelie-dev/hook-vault -- <verb>`.
-- Flake `version = "0.3.0"`, ldflags `-s -w -X main.version=…`; consumed by
+- Flake `version = "0.4.0"`, ldflags `-s -w -X main.version=…`; consumed by
   `atelie-server` as a flake input (Go 1.26.10 in nixos-26.05 there).
-- Bump = `nix flake update hook-vault` + commit + `deploy .#sp2-sd-atelie-1`.
-  No tags/releases; the input pins a commit.
+- CI (`.github/workflows/ci.yml`) runs lint, build/vet/unit, the integration
+  suite on `postgres:18` and `nix build` on every PR. `.github/workflows/release.yml`
+  builds four static binaries on a `v*` tag and refuses a tag that disagrees with
+  `flake.nix`, the `-dev` line in `cmd/hook-vault/main.go` or the `CHANGELOG.md`
+  section. Cutting one: bump those three, commit, tag, push.
+- For `atelie-server`: `nix flake update hook-vault` + commit + `deploy .#sp2-sd-atelie-1`.
+  The input pins a commit, so a tag alone does not deploy anything.
 
 ## Deliberate decisions — challenge before "fixing"
 
