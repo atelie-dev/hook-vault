@@ -256,9 +256,16 @@ func TestPanelOffersEveryVerifyProfile(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("create page: status %d", status)
 	}
-	for _, profile := range []string{"none", "github", "meta", "stripe", "generic-hmac"} {
+	for _, profile := range []string{"none", "github", "meta", "stripe", "generic-hmac", "sns"} {
 		if !strings.Contains(string(body), `value="`+profile+`"`) {
 			t.Errorf("form does not offer verify profile %q", profile)
+		}
+	}
+	// The SNS flow needs its own controls: without them the profile can be
+	// selected but not configured.
+	for _, field := range []string{`name="sns_confirm"`, `name="sns_topics"`} {
+		if !strings.Contains(string(body), field) {
+			t.Errorf("form does not carry the SNS field %q", field)
 		}
 	}
 }

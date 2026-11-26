@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/atelie-dev/hook-vault/internal/snssig"
 	"github.com/atelie-dev/hook-vault/internal/store"
 	"github.com/atelie-dev/hook-vault/internal/vault"
 )
@@ -51,7 +52,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	verification := VerifyRequest(endpoint.Verify, derefString(endpoint.VerifySecret), body, r.Header)
+	verification, snsMessage := s.verifyRequest(ctx, endpoint, r.Header, body)
 
 	key, err := s.store.ActiveKey(ctx, endpoint.ID)
 	if err != nil {
@@ -121,7 +122,32 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if subscribeURL := subscriptionToConfirm(verification, snsMessage, endpoint); subscribeURL != "" {
+		// SNS delivers nothing until the endpoint fetches this URL. The event is
+		// already committed, so a failure here costs a retry, not the evidence.
+		if err := s.snsConfirmer.Confirm(ctx, subscribeURL); err != nil {
+			s.logger.Error("confirm sns subscription", "slug", slug, "error", err)
+			writeError(w, http.StatusServiceUnavailable, "confirmation_failed",
+				"event stored; the SNS subscription is not confirmed yet")
+			return
+		}
+		s.logger.Info("confirmed sns subscription", "slug", slug, "topic", snsMessage.TopicARN)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"id": id})
+}
+
+// subscriptionToConfirm is the SubscribeURL worth acting on, or "". Only a
+// verified, opted-in subscription confirmation is safe to act on: fetching any
+// other URL the message names would let a stranger make the server call it.
+func subscriptionToConfirm(verification Verification, message *snssig.Message, endpoint store.Endpoint) string {
+	if !verification.Verified || message == nil || !endpoint.SNSAutoConfirm {
+		return ""
+	}
+	if message.Type != snssig.TypeSubscriptionConfirmation {
+		return ""
+	}
+	return message.SubscribeURL
 }
 
 // handleIngestProbe answers the HEAD that a provider makes before it accepts a

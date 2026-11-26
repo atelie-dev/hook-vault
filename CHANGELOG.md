@@ -7,6 +7,17 @@ file starts here.
 
 ### Added
 
+- An `sns` verification profile for AWS SNS: the RSA signature over SNS's
+  canonical envelope, verified against the signing certificate AWS publishes
+  (`SignatureVersion` 1 and 2), with the certificate cached and fetched only
+  from `https://sns.<region>.amazonaws.com`.
+- Per-endpoint SNS controls: `sns_topics` pins the topic ARNs an endpoint
+  accepts (a signature proves AWS sent a message, not whose topic it is), and
+  `sns_auto_confirm` decides whether the `SubscriptionConfirmation` is confirmed
+  automatically — SNS delivers nothing until that URL is fetched. The
+  confirmation is stored as an event in every mode.
+- The panel offers the profile with the three modes (manual, automatic,
+  automatic for the listed topics) and requires a topic ARN in the last one.
 - Static binaries for linux and macOS, amd64 and arm64, are attached to every
   tagged release with a `sha256sums.txt`, so a host without Nix can install by
   unpacking one. `go install github.com/atelie-dev/hook-vault/cmd/hook-vault@latest`

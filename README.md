@@ -133,6 +133,8 @@ The response is where the generated `slug` shows up:
     "events_used": 0,
     "evicted_events": 0,
     "verify": "github",
+    "sns_auto_confirm": false,
+    "sns_topics": [],
     "active_kid": "kh5sikhlk2z",
     "created_at": "2026-11-21T04:49:48.675Z",
     "disabled_at": null
@@ -156,7 +158,9 @@ readable path is worth more than an unguessable one; uniqueness is enforced by
 the database. It is the last segment of `ingest_url` and it is what `GET /v1/me`
 returns, so a consumer never has to remember it.
 
-`verify_secret` is write-only: it never comes back in any response.
+`verify_secret` is write-only: it never comes back in any response. The SNS
+profile's material — `sns_topics` and `sns_auto_confirm` — is not secret and is
+returned with the endpoint.
 
 Point the provider at `ingest_url` and read it back:
 
@@ -437,6 +441,30 @@ GitHub and Meta will not send a bearer token.
 | `meta` | `X-Hub-Signature-256` | same as GitHub, plus the `hub.challenge` handshake |
 | `stripe` | `Stripe-Signature` | `t=<unix>,v1=<hex>`, signed payload `t + "." + body`, ±5 min |
 | `generic-hmac` | `X-HookVault-Signature` | `sha256=<hex>` |
+| `sns` | — (in the JSON envelope) | RSA over SNS's canonical envelope, `SignatureVersion` 1 (SHA1) or 2 (SHA256), certificate fetched from the `SigningCertURL` |
+
+### AWS SNS
+
+SNS is the one profile that is not an HMAC and the one that needs the network.
+The signature proves AWS sent the message; it says nothing about whose topic it
+is — an account can subscribe any endpoint to its own topic and sign valid
+messages. So `sns_topics` pins the topic ARNs an endpoint accepts (empty means
+any, which is the equivalent of accepting anonymous mail), and a message from
+another topic is refused and stored as evidence.
+
+SNS also delivers nothing until the endpoint fetches the `SubscribeURL` of the
+`SubscriptionConfirmation`, which is why the endpoint carries a per-endpoint
+choice: `sns_auto_confirm: false` keeps the confirmation as evidence for a human
+holding the key, and `true` acts on it after the signature verifies. The
+confirmation is stored in both cases.
+
+Both outbound requests — the certificate fetch and the confirmation — are
+restricted to `https` on `sns.<region>.amazonaws.com`, refuse redirects, and
+have short timeouts. The signing certificate is cached for six hours: it rotates
+on AWS's schedule, not per message, and SNS gives an endpoint about fifteen
+seconds to answer. The chain is not walked to a pinned root: the transport
+already authenticated an allowlisted host, and a bundled root would be one more
+thing to keep current for no boundary the allowlist does not already hold.
 
 A failed verification is **stored as evidence** with `status: "rejected"` and
 answered with `401`, then hidden from the default read. Dropping it silently

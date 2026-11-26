@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,19 +22,21 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9]{12,64}$`)
 // endpointDTO is the control-plane view of an endpoint. It deliberately has no
 // field for the provider secret or the verify token: those are write-only.
 type endpointDTO struct {
-	ID            string     `json:"id"`
-	Slug          string     `json:"slug"`
-	Name          string     `json:"name"`
-	IngestURL     string     `json:"ingest_url,omitempty"`
-	RetentionDays *int       `json:"retention_days"`
-	MaxBytes      *int64     `json:"max_bytes"`
-	BytesUsed     int64      `json:"bytes_used"`
-	EventsUsed    int64      `json:"events_used"`
-	EvictedEvents int64      `json:"evicted_events"`
-	Verify        string     `json:"verify"`
-	ActiveKID     *string    `json:"active_kid"`
-	CreatedAt     time.Time  `json:"created_at"`
-	DisabledAt    *time.Time `json:"disabled_at"`
+	ID             string     `json:"id"`
+	Slug           string     `json:"slug"`
+	Name           string     `json:"name"`
+	IngestURL      string     `json:"ingest_url,omitempty"`
+	RetentionDays  *int       `json:"retention_days"`
+	MaxBytes       *int64     `json:"max_bytes"`
+	BytesUsed      int64      `json:"bytes_used"`
+	EventsUsed     int64      `json:"events_used"`
+	EvictedEvents  int64      `json:"evicted_events"`
+	Verify         string     `json:"verify"`
+	SNSAutoConfirm bool       `json:"sns_auto_confirm"`
+	SNSTopics      []string   `json:"sns_topics"`
+	ActiveKID      *string    `json:"active_kid"`
+	CreatedAt      time.Time  `json:"created_at"`
+	DisabledAt     *time.Time `json:"disabled_at"`
 }
 
 type keyDTO struct {
@@ -45,33 +48,41 @@ type keyDTO struct {
 }
 
 func (s *Server) toEndpointDTO(ep store.Endpoint) endpointDTO {
+	topics := ep.SNSTopics
+	if topics == nil {
+		topics = []string{}
+	}
 	return endpointDTO{
-		ID:            ep.ID,
-		Slug:          ep.Slug,
-		Name:          ep.Name,
-		IngestURL:     s.ingestURL(ep.Slug),
-		RetentionDays: ep.RetentionDays,
-		MaxBytes:      ep.MaxBytes,
-		BytesUsed:     ep.BytesUsed,
-		EventsUsed:    ep.EventsUsed,
-		EvictedEvents: ep.EvictedEvents,
-		Verify:        ep.Verify,
-		ActiveKID:     ep.ActiveKID,
-		CreatedAt:     ep.CreatedAt,
-		DisabledAt:    ep.DisabledAt,
+		ID:             ep.ID,
+		Slug:           ep.Slug,
+		Name:           ep.Name,
+		IngestURL:      s.ingestURL(ep.Slug),
+		RetentionDays:  ep.RetentionDays,
+		MaxBytes:       ep.MaxBytes,
+		BytesUsed:      ep.BytesUsed,
+		EventsUsed:     ep.EventsUsed,
+		EvictedEvents:  ep.EvictedEvents,
+		Verify:         ep.Verify,
+		SNSAutoConfirm: ep.SNSAutoConfirm,
+		SNSTopics:      topics,
+		ActiveKID:      ep.ActiveKID,
+		CreatedAt:      ep.CreatedAt,
+		DisabledAt:     ep.DisabledAt,
 	}
 }
 
 type createEndpointRequest struct {
-	Name          string `json:"name"`
-	Slug          string `json:"slug"`
-	RetentionDays *int   `json:"retention_days"`
-	MaxBytes      *int64 `json:"max_bytes"`
-	Verify        string `json:"verify"`
-	VerifySecret  string `json:"verify_secret"`
-	VerifyToken   string `json:"verify_token"`
-	PublicKey     string `json:"public_key"`
-	TokenSHA256   string `json:"token_sha256"`
+	Name           string   `json:"name"`
+	Slug           string   `json:"slug"`
+	RetentionDays  *int     `json:"retention_days"`
+	MaxBytes       *int64   `json:"max_bytes"`
+	Verify         string   `json:"verify"`
+	VerifySecret   string   `json:"verify_secret"`
+	VerifyToken    string   `json:"verify_token"`
+	SNSAutoConfirm bool     `json:"sns_auto_confirm"`
+	SNSTopics      []string `json:"sns_topics"`
+	PublicKey      string   `json:"public_key"`
+	TokenSHA256    string   `json:"token_sha256"`
 }
 
 type createEndpointResponse struct {
@@ -110,11 +121,21 @@ func (s *Server) handleCreateEndpoint(w http.ResponseWriter, r *http.Request) {
 		verify = VerifyNone
 	}
 	if !validVerifyProfile(verify) {
-		writeError(w, http.StatusUnprocessableEntity, "invalid_verify", "verify must be one of none, github, meta, stripe, generic-hmac")
+		writeError(w, http.StatusUnprocessableEntity, "invalid_verify", "verify must be one of none, github, meta, stripe, generic-hmac, sns")
 		return
 	}
-	if verify != VerifyNone && req.VerifySecret == "" {
+	// SNS has no shared secret: its material is the topic allowlist.
+	if verify != VerifyNone && verify != VerifySNS && req.VerifySecret == "" {
 		writeError(w, http.StatusUnprocessableEntity, "missing_verify_secret", "verify_secret is required for the chosen profile")
+		return
+	}
+	if verify != VerifySNS && (req.SNSAutoConfirm || len(req.SNSTopics) > 0) {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_sns", "sns_auto_confirm and sns_topics only apply to verify=sns")
+		return
+	}
+	topics, err := normalizeSNSTopics(req.SNSTopics)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_sns", err.Error())
 		return
 	}
 
@@ -131,13 +152,15 @@ func (s *Server) handleCreateEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	endpoint, err := s.store.CreateEndpointWithKey(r.Context(),
 		store.CreateEndpointParams{
-			Slug:          req.Slug,
-			Name:          name,
-			RetentionDays: req.RetentionDays,
-			MaxBytes:      req.MaxBytes,
-			Verify:        verify,
-			VerifySecret:  optional(req.VerifySecret),
-			VerifyToken:   optional(req.VerifyToken),
+			Slug:           req.Slug,
+			Name:           name,
+			RetentionDays:  req.RetentionDays,
+			MaxBytes:       req.MaxBytes,
+			Verify:         verify,
+			VerifySecret:   optional(req.VerifySecret),
+			VerifyToken:    optional(req.VerifyToken),
+			SNSAutoConfirm: req.SNSAutoConfirm,
+			SNSTopics:      topics,
 		},
 		vault.KIDFor(public[:]), public[:], tokenHash,
 	)
@@ -208,13 +231,15 @@ func (s *Server) handleGetEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchEndpointRequest struct {
-	Name          *string `json:"name"`
-	RetentionDays *int    `json:"retention_days"`
-	MaxBytes      *int64  `json:"max_bytes"`
-	Verify        *string `json:"verify"`
-	VerifySecret  *string `json:"verify_secret"`
-	VerifyToken   *string `json:"verify_token"`
-	Disabled      *bool   `json:"disabled"`
+	Name           *string   `json:"name"`
+	RetentionDays  *int      `json:"retention_days"`
+	MaxBytes       *int64    `json:"max_bytes"`
+	Verify         *string   `json:"verify"`
+	VerifySecret   *string   `json:"verify_secret"`
+	VerifyToken    *string   `json:"verify_token"`
+	SNSAutoConfirm *bool     `json:"sns_auto_confirm"`
+	SNSTopics      *[]string `json:"sns_topics"`
+	Disabled       *bool     `json:"disabled"`
 }
 
 func (s *Server) handlePatchEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -244,18 +269,34 @@ func (s *Server) handlePatchEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Verify != nil && !validVerifyProfile(*req.Verify) {
-		writeError(w, http.StatusUnprocessableEntity, "invalid_verify", "verify must be one of none, github, meta, stripe, generic-hmac")
+		writeError(w, http.StatusUnprocessableEntity, "invalid_verify", "verify must be one of none, github, meta, stripe, generic-hmac, sns")
 		return
+	}
+	if req.Verify != nil && *req.Verify != VerifySNS &&
+		(req.SNSAutoConfirm != nil || req.SNSTopics != nil) {
+		writeError(w, http.StatusUnprocessableEntity, "invalid_sns", "sns_auto_confirm and sns_topics only apply to verify=sns")
+		return
+	}
+	var topics *[]string
+	if req.SNSTopics != nil {
+		normalized, err := normalizeSNSTopics(*req.SNSTopics)
+		if err != nil {
+			writeError(w, http.StatusUnprocessableEntity, "invalid_sns", err.Error())
+			return
+		}
+		topics = &normalized
 	}
 
 	endpoint, err := s.store.UpdateEndpoint(r.Context(), id, store.EndpointPatch{
-		Name:          req.Name,
-		RetentionDays: req.RetentionDays,
-		MaxBytes:      req.MaxBytes,
-		Verify:        req.Verify,
-		VerifySecret:  req.VerifySecret,
-		VerifyToken:   req.VerifyToken,
-		Disabled:      req.Disabled,
+		Name:           req.Name,
+		RetentionDays:  req.RetentionDays,
+		MaxBytes:       req.MaxBytes,
+		Verify:         req.Verify,
+		VerifySecret:   req.VerifySecret,
+		VerifyToken:    req.VerifyToken,
+		SNSAutoConfirm: req.SNSAutoConfirm,
+		SNSTopics:      topics,
+		Disabled:       req.Disabled,
 	})
 	if err != nil {
 		s.endpointError(w, err, "update endpoint")
@@ -415,11 +456,40 @@ func (s *Server) endpointError(w http.ResponseWriter, err error, operation strin
 
 func validVerifyProfile(profile string) bool {
 	switch profile {
-	case VerifyNone, VerifyGitHub, VerifyMeta, VerifyStripe, VerifyGeneric:
+	case VerifyNone, VerifyGitHub, VerifyMeta, VerifyStripe, VerifyGeneric, VerifySNS:
 		return true
 	default:
 		return false
 	}
+}
+
+// snsTopicARNPattern is the shape of an SNS topic ARN in every partition.
+var snsTopicARNPattern = regexp.MustCompile(`^arn:aws(-cn|-us-gov)?:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}$`)
+
+// maxSNSTopics bounds the allowlist: an endpoint belongs to a handful of
+// topics, and an unbounded list is a list nobody reads.
+const maxSNSTopics = 20
+
+// normalizeSNSTopics trims, validates and dedupes the topic allowlist. Blank
+// lines are what a textarea sends, so they are dropped rather than refused.
+func normalizeSNSTopics(topics []string) ([]string, error) {
+	normalized := make([]string, 0, len(topics))
+	for _, topic := range topics {
+		topic = strings.TrimSpace(topic)
+		if topic == "" {
+			continue
+		}
+		if !snsTopicARNPattern.MatchString(topic) {
+			return nil, fmt.Errorf("sns_topics entry %q is not an SNS topic ARN", topic)
+		}
+		if !slices.Contains(normalized, topic) {
+			normalized = append(normalized, topic)
+		}
+	}
+	if len(normalized) > maxSNSTopics {
+		return nil, fmt.Errorf("sns_topics is limited to %d topics", maxSNSTopics)
+	}
+	return normalized, nil
 }
 
 func parseTokenHash(value string) ([]byte, error) {

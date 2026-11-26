@@ -17,6 +17,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/atelie-dev/hook-vault/internal/snssig"
 	"github.com/atelie-dev/hook-vault/internal/store"
 	"github.com/atelie-dev/hook-vault/internal/webui"
 )
@@ -30,6 +31,11 @@ type Options struct {
 	AdminToken   string
 	Logger       *slog.Logger
 	Version      string
+	// Certificates fetches the certificate an SNS message names, and
+	// SNSConfirmer performs the confirmation SNS requires before it delivers.
+	// nil means the AWS-only production pair; tests inject fakes.
+	Certificates snssig.CertificateFetcher
+	SNSConfirmer snssig.Confirmer
 }
 
 // Server holds the handlers and their dependencies.
@@ -41,6 +47,8 @@ type Server struct {
 	adminToken   string
 	logger       *slog.Logger
 	version      string
+	certificates snssig.CertificateFetcher
+	snsConfirmer snssig.Confirmer
 	wake         chan struct{}
 }
 
@@ -50,6 +58,14 @@ func New(opts Options) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	certificates := opts.Certificates
+	if certificates == nil {
+		certificates = snssig.NewAWSCertificates()
+	}
+	confirmer := opts.SNSConfirmer
+	if confirmer == nil {
+		confirmer = snssig.NewHTTPConfirmer()
+	}
 	return &Server{
 		store:        opts.Store,
 		publicURL:    opts.PublicURL,
@@ -58,6 +74,8 @@ func New(opts Options) *Server {
 		adminToken:   opts.AdminToken,
 		logger:       logger,
 		version:      opts.Version,
+		certificates: certificates,
+		snsConfirmer: confirmer,
 		wake:         make(chan struct{}, 1),
 	}
 }

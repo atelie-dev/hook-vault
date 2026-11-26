@@ -1,14 +1,19 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/atelie-dev/hook-vault/internal/snssig"
+	"github.com/atelie-dev/hook-vault/internal/store"
 )
 
 // Verification profiles. The provider secret authenticates the sender; it can
@@ -20,6 +25,9 @@ const (
 	VerifyMeta    = "meta"
 	VerifyStripe  = "stripe"
 	VerifyGeneric = "generic-hmac"
+	// VerifySNS is the one profile that needs the network: SNS signs with a
+	// certificate it publishes, so verification is a fetch, not a hash.
+	VerifySNS = "sns"
 )
 
 // stripeTolerance bounds replay of a Stripe delivery.
@@ -61,6 +69,31 @@ func VerifyRequest(profile, secret string, body []byte, header http.Header) Veri
 	default:
 		return Verification{Reason: "unknown verification profile " + profile}
 	}
+}
+
+// verifyRequest is VerifyRequest plus the profile that cannot be a pure
+// function: SNS signs with a certificate it publishes, so the check is a fetch
+// and a parse.
+//
+// The endpoint's topic allowlist is applied here too. A valid SNS signature
+// proves that AWS sent the message, not that the topic is yours, so on an
+// endpoint that names its topics a message from any other one is refused.
+func (s *Server) verifyRequest(ctx context.Context, endpoint store.Endpoint, header http.Header, body []byte) (Verification, *snssig.Message) {
+	if endpoint.Verify != VerifySNS {
+		return VerifyRequest(endpoint.Verify, derefString(endpoint.VerifySecret), body, header), nil
+	}
+
+	message, err := snssig.Parse(body)
+	if err != nil {
+		return Verification{Reason: "body is not an SNS envelope"}, nil
+	}
+	if len(endpoint.SNSTopics) > 0 && !slices.Contains(endpoint.SNSTopics, message.TopicARN) {
+		return Verification{Reason: "the topic arn is not allowed on this endpoint"}, &message
+	}
+	if err := message.Verify(ctx, s.certificates); err != nil {
+		return Verification{Reason: err.Error()}, &message
+	}
+	return Verification{Verified: true, Reason: "signature verified"}, &message
 }
 
 func verifyHexHMAC(secret string, body []byte, value, headerName string) Verification {
@@ -148,6 +181,11 @@ func ExtractMeta(profile string, header http.Header, body []byte) map[string]any
 		probe := probeJSON(body)
 		meta["event"] = truncate(probe.Type, 100)
 		meta["delivery"] = truncate(probe.ID, 100)
+	case VerifySNS:
+		if message, err := snssig.Parse(body); err == nil {
+			meta["event"] = truncate(message.Type, 100)
+			meta["delivery"] = truncate(message.MessageID, 100)
+		}
 	case VerifyGeneric:
 		meta["event"] = truncate(header.Get("X-HookVault-Event"), 100)
 	}
