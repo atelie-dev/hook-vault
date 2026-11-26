@@ -3,7 +3,7 @@
 Notable changes to hook-vault. Releases before 0.4.0 are the commit log; the
 file starts here.
 
-## [Unreleased]
+## [0.5.0] - 2026-11-26
 
 ### Added
 
